@@ -5,10 +5,10 @@ export interface InkOptions { mode: InkMode; preserve: boolean }
 export interface NormRect { x: number; y: number; w: number; h: number }
 
 export const FULL_CORNERS: Corner[] = [
-  [0.035, 0.035],
-  [0.965, 0.035],
-  [0.965, 0.965],
-  [0.035, 0.965],
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
 ]
 
 export const FILTERS: { id: FilterId; label: string; note: string }[] = [
@@ -464,7 +464,8 @@ function clamp8(v: number) {
 
 export async function autoCrop(dataUrl: string): Promise<Corner[]> {
   const img = await loadImageEl(dataUrl)
-  const scale = 220 / Math.max(img.naturalWidth, img.naturalHeight)
+  const maxSide = 360
+  const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight))
   const w = Math.max(1, Math.round(img.naturalWidth * scale))
   const h = Math.max(1, Math.round(img.naturalHeight * scale))
   const c = document.createElement('canvas')
@@ -473,29 +474,141 @@ export async function autoCrop(dataUrl: string): Promise<Corner[]> {
   const ctx = c.getContext('2d', { willReadFrequently: true })!
   ctx.drawImage(img, 0, 0, w, h)
   const d = ctx.getImageData(0, 0, w, h).data
-  let minX = w, minY = h, maxX = 0, maxY = 0, count = 0
+
+  const lumAt = (i: number) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+  const median = (values: number[]) => {
+    if (!values.length) return 0
+    values.sort((a, b) => a - b)
+    return values[values.length >> 1]
+  }
+
+  // Sample the outer band and the centre. A document photo almost always has a
+  // visible page/desk contrast or colour difference; flat scans fall back to
+  // the full frame, which avoids the old fixed 3.5% border.
+  const band = Math.max(3, Math.round(Math.min(w, h) * 0.055))
+  const borderLums: number[] = []
+  const borderR: number[] = []
+  const borderG: number[] = []
+  const borderB: number[] = []
+  for (let y = 0; y < h; y += 2) {
+    for (let x = 0; x < w; x += 2) {
+      if (x >= band && x < w - band && y >= band && y < h - band) continue
+      const i = (y * w + x) * 4
+      borderLums.push(lumAt(i))
+      borderR.push(d[i]); borderG.push(d[i + 1]); borderB.push(d[i + 2])
+    }
+  }
+  const bx0 = Math.round(w * 0.32), bx1 = Math.round(w * 0.68)
+  const by0 = Math.round(h * 0.32), by1 = Math.round(h * 0.68)
+  const centreLums: number[] = []
+  const centreR: number[] = []
+  const centreG: number[] = []
+  const centreB: number[] = []
+  for (let y = by0; y < by1; y += 2) {
+    for (let x = bx0; x < bx1; x += 2) {
+      const i = (y * w + x) * 4
+      centreLums.push(lumAt(i))
+      centreR.push(d[i]); centreG.push(d[i + 1]); centreB.push(d[i + 2])
+    }
+  }
+  if (!borderLums.length || !centreLums.length) return FULL_CORNERS
+  const bl = median(borderLums)
+  const cl = median(centreLums)
+  const br = median(borderR), bg = median(borderG), bb = median(borderB)
+  const cr = median(centreR), cg = median(centreG), cb = median(centreB)
+  const delta = cl - bl
+  const colourDist = Math.hypot(cr - br, cg - bg, cb - bb)
+  const mode: 'bright' | 'dark' | 'colour' | null =
+    delta > 16 ? 'bright' : delta < -16 ? 'dark' : colourDist > 30 ? 'colour' : null
+  if (!mode) return FULL_CORNERS
+
+  const mask = new Uint8Array(w * h)
+  const threshold = (bl + cl) / 2
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4
-      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-      if (lum < 168) {
-        count++
-        if (x < minX) minX = x
-        if (x > maxX) maxX = x
-        if (y < minY) minY = y
-        if (y > maxY) maxY = y
+      const lum = lumAt(i)
+      let inside = false
+      if (mode === 'bright') inside = lum > threshold
+      else if (mode === 'dark') inside = lum < threshold
+      else {
+        const dp = Math.hypot(d[i] - cr, d[i + 1] - cg, d[i + 2] - cb)
+        const db = Math.hypot(d[i] - br, d[i + 1] - bg, d[i + 2] - bb)
+        inside = dp < db && dp < 90
       }
+      mask[y * w + x] = inside ? 1 : 0
     }
   }
-  if (count < w * h * 0.012 || maxX <= minX || maxY <= minY) return FULL_CORNERS
-  const pad = 0.025
-  const n = (v: number, total: number) => Math.max(0.005, Math.min(0.995, v / total))
-  return [
-    [Math.max(0.005, n(minX, w) - pad), Math.max(0.005, n(minY, h) - pad)],
-    [Math.min(0.995, n(maxX, w) + pad), Math.max(0.005, n(minY, h) - pad)],
-    [Math.min(0.995, n(maxX, w) + pad), Math.min(0.995, n(maxY, h) + pad)],
-    [Math.max(0.005, n(minX, w) - pad), Math.min(0.995, n(maxY, h) + pad)],
-  ]
+
+  // Largest 4-connected component = the page, ignoring shadows / speckles.
+  const seen = new Uint8Array(w * h)
+  const queue = new Int32Array(w * h)
+  let best: number[] = []
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const start = y * w + x
+      if (!mask[start] || seen[start]) continue
+      let head = 0, tail = 0
+      queue[tail++] = start
+      seen[start] = 1
+      const comp: number[] = []
+      while (head < tail) {
+        const p = queue[head++]
+        comp.push(p)
+        const px = p % w
+        const py = (p / w) | 0
+        if (px > 0) { const n = p - 1; if (mask[n] && !seen[n]) { seen[n] = 1; queue[tail++] = n } }
+        if (px < w - 1) { const n = p + 1; if (mask[n] && !seen[n]) { seen[n] = 1; queue[tail++] = n } }
+        if (py > 0) { const n = p - w; if (mask[n] && !seen[n]) { seen[n] = 1; queue[tail++] = n } }
+        if (py < h - 1) { const n = p + w; if (mask[n] && !seen[n]) { seen[n] = 1; queue[tail++] = n } }
+      }
+      if (comp.length > best.length) best = comp
+    }
+  }
+  if (best.length < w * h * 0.06) return FULL_CORNERS
+  if (best.length > w * h * 0.985) return FULL_CORNERS
+
+  let qTL = best[0], qTR = best[0], qBR = best[0], qBL = best[0]
+  let minS = Infinity, maxD = -Infinity, maxS = -Infinity, minD = Infinity
+  let minX = w, maxX = 0, minY = h, maxY = 0
+  for (const p of best) {
+    const x = p % w
+    const y = (p / w) | 0
+    const s = x + y
+    const dd = x - y
+    if (s < minS) { minS = s; qTL = p }
+    if (dd > maxD) { maxD = dd; qTR = p }
+    if (s > maxS) { maxS = s; qBR = p }
+    if (dd < minD) { minD = dd; qBL = p }
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  // If the page is clipped by three or four frame edges, using the full frame
+  // is safer than a strange partial quadrilateral.
+  const touches = (minX <= 1 ? 1 : 0) + (maxX >= w - 2 ? 1 : 0) + (minY <= 1 ? 1 : 0) + (maxY >= h - 2 ? 1 : 0)
+  if (touches >= 3) return FULL_CORNERS
+
+  const pointOf = (p: number): Corner => [(p % w) / w, ((p / w) | 0) / h]
+  const quad = [pointOf(qTL), pointOf(qTR), pointOf(qBR), pointOf(qBL)]
+  const area = Math.abs(
+    quad.reduce((sum, [x, y], i) => {
+      const [nx, ny] = quad[(i + 1) % 4]
+      return sum + x * ny - nx * y
+    }, 0) / 2,
+  )
+  if (area < 0.06 || area > 0.98) return FULL_CORNERS
+  // Slightly expand outward so the scanner look does not trim the paper edge.
+  const cx = (quad[0][0] + quad[1][0] + quad[2][0] + quad[3][0]) / 4
+  const cy = (quad[0][1] + quad[1][1] + quad[2][1] + quad[3][1]) / 4
+  const expanded = quad.map(([x, y]) => {
+    const dx = x - cx
+    const dy = y - cy
+    const len = Math.hypot(dx, dy) || 1
+    return [Math.max(0, Math.min(1, x + (dx / len) * 0.008)), Math.max(0, Math.min(1, y + (dy / len) * 0.008))] as Corner
+  })
+  return expanded
 }
 
 export async function rotateDataUrl(dataUrl: string): Promise<string> {

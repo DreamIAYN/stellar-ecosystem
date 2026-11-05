@@ -19,7 +19,7 @@
 | **代码工坊 · 编辑与预览** | **云巢 · 本地文件** |
 | ![代码工坊](docs/screenshots/editor.png) | ![云巢](docs/screenshots/drive.png) |
 
-更多截图（朋友圈、远界、漫游、小环）在 [docs/screenshots](docs/screenshots)。
+更多截图（朋友圈、远界、漫游、小环、裁剪）在 [docs/screenshots](docs/screenshots)。
 
 ## 为什么是「一套生态」
 
@@ -58,7 +58,7 @@ ecosystem.notify('扫描师', '扫描件已保存', { appId: 'drive', params: { 
 | **星讯** | Stellar IM | 消息、群聊、文件卡片、语音消息、图片、朋友圈、点赞评论、语音/视频通话界面（本地媒体预览 + 可升级到会客厅） |
 | **云巢** | Nest Drive | 本地优先云盘、文件夹、上传/下载、搜索、星标、回收站、图片/PDF/文本预览、跨应用「打开方式」 |
 | **声影** | Echo Player | 音视频播放、播放列表、进度/音量/倍速/循环/随机、全屏、画中画、VTT 字幕、拖拽导入 |
-| **扫描师** | Lens Scanner | 拍照/导入/**Ctrl+V 粘贴截图**、四点透视裁剪、自动裁边、魔法白/增强/灰度/黑白、**红蓝笔迹去手写**、**黑笔框选清除**、锐化、**扫描白底 + 智能高清 2×**、证件模式与水印、OCR、原图对比/归档、PNG/PDF 导出 |
+| **扫描师** | Lens Scanner | 拍照/导入/**Ctrl+V 粘贴截图**、**自动识别页面四角**、四点透视裁剪、魔法白/增强/灰度/黑白、**红蓝笔迹去手写**、**黑笔框选清除**、锐化、**扫描白底 + 智能高清 2×**、证件模式与水印、OCR、原图对比/归档、PNG/PDF 导出 |
 | **智核** | Nova AI | OpenAI 兼容 / Anthropic / Gemini / Ollama / 演示模型，流式输出、模型切换、系统提示词、云巢上下文、会话历史、API Key 本地配置 |
 | **会客厅** | Orbit Meet | 基于 WebRTC 的多人会议、房间号、屏幕共享、成员状态、房间聊天、本地录制并存入云巢 |
 | **代码工坊** | Forge Editor | CodeMirror 6、多标签、文件树、Markdown/HTML 预览、语法高亮、搜索、保存到云巢、AI 审阅 |

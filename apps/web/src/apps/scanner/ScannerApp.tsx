@@ -123,12 +123,13 @@ export default function ScannerApp({ params, winId }: AppProps) {
     try {
       const size = await imageSize(dataUrl)
       const filter = MODE_FILTER[mode]
+      const corners = await autoCrop(dataUrl).catch(() => FULL_CORNERS)
       const page: Page = {
         id: `page-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name,
         original: dataUrl,
         processed: dataUrl,
-        corners: FULL_CORNERS,
+        corners,
         width: size.width,
         height: size.height,
         filter,
@@ -140,7 +141,7 @@ export default function ScannerApp({ params, winId }: AppProps) {
       setPages((prev) => [...prev, page])
       setActiveId(page.id)
       setCropMode(crop)
-      const result = await makeScan(dataUrl, FULL_CORNERS, filter, inkStrength, { mode: inkMode, preserve: preserveInk }, 1700, 0, 1)
+      const result = await makeScan(dataUrl, corners, filter, inkStrength, { mode: inkMode, preserve: preserveInk }, 1700, 0, 1)
       setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: result.dataUrl, width: result.width, height: result.height } : p)))
     } catch (e) {
       toast('导入失败', e instanceof Error ? e.message : '无法读取图片', 'error')
@@ -537,8 +538,8 @@ export default function ScannerApp({ params, winId }: AppProps) {
               </div>
               {cropMode && (
                 <div className="scan-crop-bar">
-                  <span className="chip accent"><Crop size={11} /> 拖动四个角进行透视校正</span>
-                  <button className="btn sm" onClick={autoDetect}>自动裁边</button>
+                  <span className="chip accent"><Crop size={11} /> 已自动识别页面边界 · 拖动四角微调</span>
+                  <button className="btn sm" onClick={autoDetect}>重新识别</button>
                   <button className="btn sm" onClick={() => setPages((prev) => prev.map((p) => (p.id === active.id ? { ...p, corners: FULL_CORNERS } : p)))}>重置</button>
                   <span className="grow" />
                   <button className="btn sm" onClick={() => setCropMode(false)}>取消</button>
