@@ -258,3 +258,110 @@ function demoAnswer(prompt: string, context: string): string {
   }
   return `我收到了：**${prompt.slice(0, 160)}**${hasContext ? `\n\n并读取了 ${context.length} 个字符的跨应用上下文。` : ''}\n\n这是演示模式的回答。当前生态已经打通：\n\n- 从云巢分享文件 → 用 AI 分析\n- 从扫描仪分享扫描件 → 提取 / 总结\n- 从浏览器分享网页 → 摘要\n\n在「控制台 → AI 模型」填入任意兼容 API 的 Key，即可获得真实模型的完整能力。`
 }
+
+function textFromContent(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === 'string') return part
+      if (part && typeof part === 'object' && 'text' in part) return String((part as { text?: unknown }).text ?? '')
+      return ''
+    }).join('')
+  }
+  return content == null ? '' : String(content)
+}
+
+/** Multimodal completion for local OCR fallbacks. The image never leaves the
+ * configured provider; callers must make that explicit in the UI. */
+export async function visionCompletion(provider: AIProvider, imageDataUrl: string, prompt: string, signal?: AbortSignal): Promise<string> {
+  if (provider.kind === 'demo') throw new Error('演示模型不支持图片识别，请配置视觉模型。')
+  if (!provider.apiKey && provider.kind !== 'ollama') {
+    throw new Error(`请先在「控制台 → AI 模型」中为 ${provider.label} 填入 API Key。`)
+  }
+  const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) throw new Error('图片编码无效')
+  const mime = match[1]
+  const base64 = match[2]
+
+  if (provider.kind === 'anthropic') {
+    const base = trimBase(provider.baseUrl || 'https://api.anthropic.com')
+    const res = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': provider.apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      signal,
+      body: JSON.stringify({
+        model: provider.model,
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mime, data: base64 } },
+            { type: 'text', text: prompt },
+          ],
+        }],
+      }),
+    })
+    await assertOk(res)
+    const json = await res.json() as { content?: Array<{ type?: string; text?: string }> }
+    return (json.content ?? []).filter((part) => part.type === 'text').map((part) => part.text ?? '').join('')
+  }
+
+  if (provider.kind === 'gemini') {
+    const base = trimBase(provider.baseUrl || 'https://generativelanguage.googleapis.com')
+    const res = await fetch(`${base}/v1beta/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: base64 } }] }],
+        generationConfig: { maxOutputTokens: 4096 },
+      }),
+    })
+    await assertOk(res)
+    const json = await res.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }
+    return (json.candidates?.[0]?.content?.parts ?? []).map((part) => part.text ?? '').join('')
+  }
+
+  if (provider.kind === 'ollama') {
+    const base = trimBase(provider.baseUrl || 'http://127.0.0.1:11434')
+    const res = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: provider.model, stream: false, messages: [{ role: 'user', content: prompt, images: [base64] }] }),
+    })
+    await assertOk(res)
+    const json = await res.json() as { message?: { content?: unknown } }
+    return textFromContent(json.message?.content)
+  }
+
+  const base = trimBase(provider.baseUrl || 'https://api.openai.com/v1')
+  const res = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+    },
+    signal,
+    body: JSON.stringify({
+      model: provider.model,
+      stream: false,
+      max_tokens: 4096,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: imageDataUrl } },
+        ],
+      }],
+    }),
+  })
+  await assertOk(res)
+  const json = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> }
+  return textFromContent(json.choices?.[0]?.message?.content)
+}

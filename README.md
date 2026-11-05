@@ -63,7 +63,7 @@ ecosystem.notify('扫描师', '扫描件已保存', { appId: 'drive', params: { 
 | **会客厅** | Orbit Meet | 基于 WebRTC 的多人会议、房间号、屏幕共享、成员状态、房间聊天、本地录制并存入云巢 |
 | **代码工坊** | Forge Editor | CodeMirror 6、多标签、文件树、Markdown/HTML 预览、语法高亮、搜索、保存到云巢、AI 审阅 |
 | **远界** | Remote Desk | 屏幕共享、P2P 指针同步、剪贴板、截图、会话码、活动日志；桌面代理可扩展为 OS 级输入注入 |
-| **墨记** | Ink Notes | 压感手写、**三层低延迟实时笔迹**、**二次曲线平滑**、`pointerrawupdate`、钢笔/荧光笔/橡皮/文字、撤销重做、四种纸张、多页、PNG/PDF、云巢归档 |
+| **墨记** | Ink Notes | 压感手写、**三层低延迟实时笔迹**、**二次曲线平滑**、钢笔/荧光笔/橡皮/文字、**页面 OCR（本地 Tesseract / AI 视觉）**、撤销重做、四种纸张、多页、PNG/PDF/Markdown、云巢归档 |
 | **漫游** | Drift Browser | 多标签、地址栏、前进后退、书签、起始页、页面 AI 摘要、系统浏览器打开；桌面壳可替换为原生 WebView |
 | **小环** | Halo Assistant | Web Speech 语音识别/播报、自然语言跨应用指令、本地命令解析、AI 兜底 |
 | **控制台** | Control | 外观/壁纸/强调色/身份、多模型 API、存储用量、完整 Zip 备份与恢复、演示数据重置、开源许可 |

@@ -32,6 +32,8 @@
 
 ### Apps
 
+墨记 OCR 分两条链路：本地 Tesseract.js，以及 `visionCompletion()` 的多模态 API（OpenAI/Anthropic/Gemini/Ollama）。识别结果不会覆盖原页，可生成独立的文字页。
+
 墨记使用「底层页面画布 + 中间平滑笔迹层 + 顶层笔尖尾部层」：指针事件只操作 Canvas refs，不进入 React state；原生 `pointerrawupdate` 与 `getCoalescedEvents()` 批量采样，单批一次 stroke；笔迹用二次曲线中点插值，尾部层即时画到当前笔尖。Canvas 使用 `desynchronized`，窗口禁用 backdrop blur；提交时把新笔画增量画到底层并跳过整页重绘。
 
 每个应用位于 `src/apps/<app>/`，默认导出 React 组件，接收 `params` 与 `winId`。应用通过 `AppRenderer` 懒加载，单个应用崩溃由 `AppErrorBoundary` 隔离。

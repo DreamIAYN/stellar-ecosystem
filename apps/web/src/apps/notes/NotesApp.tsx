@@ -1,5 +1,7 @@
 import {
   BookOpen,
+  Check,
+  Copy,
   Download,
   Eraser,
   Highlighter,
@@ -7,6 +9,7 @@ import {
   PenLine,
   Plus,
   Redo2,
+  ScanText,
   Share2,
   Sparkles,
   Trash2,
@@ -18,10 +21,11 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AppProps } from '../../components/AppRenderer'
+import { visionCompletion } from '../../core/ai'
 import { ecosystem } from '../../core/ecosystem'
 import { useSystem } from '../../core/store'
 import type { Notebook, NotePage, NoteText, Point, Stroke } from '../../core/types'
-import { cn, downloadBlob, nowIso, uid } from '../../core/utils'
+import { cn, copyText, downloadBlob, nowIso, uid } from '../../core/utils'
 
 const MAX_W = 1240
 const MAX_H = 1754
@@ -149,6 +153,8 @@ export default function NotesApp({ params, winId }: AppProps) {
   const [textBox, setTextBox] = useState<{ x: number; y: number; left: number; top: number; value: string } | null>(null)
   const [savedAt, setSavedAt] = useState('')
   const [fontTick, setFontTick] = useState(0)
+  const [ocrOpen, setOcrOpen] = useState(false)
+  const [ocrImage, setOcrImage] = useState('')
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const liveCanvasRef = useRef<HTMLCanvasElement>(null)
   const tailCanvasRef = useRef<HTMLCanvasElement>(null)
@@ -459,6 +465,44 @@ export default function NotesApp({ params, winId }: AppProps) {
     }
   }
 
+  const openOcr = () => {
+    if (!page) return
+    const c = document.createElement('canvas')
+    c.width = MAX_W
+    c.height = MAX_H
+    drawPage(c.getContext('2d')!, page, MAX_W, MAX_H)
+    setOcrImage(c.toDataURL('image/jpeg', 0.92))
+    setOcrOpen(true)
+  }
+
+  const insertOcrText = (text: string) => {
+    if (!notebook || !text.trim()) return
+    const lines: string[] = []
+    for (const raw of text.split('\n')) {
+      if (!raw.trim()) { lines.push(''); continue }
+      let line = ''
+      for (const ch of raw) {
+        line += ch
+        if (line.length >= 26) { lines.push(line); line = '' }
+      }
+      if (line) lines.push(line)
+    }
+    const chunks: string[][] = []
+    for (let i = 0; i < lines.length; i += 32) chunks.push(lines.slice(i, i + 32))
+    if (!chunks.length) chunks.push([text])
+    const start = notebook.pages.length
+    for (const chunk of chunks) {
+      const id = addNotePage(notebook.id)
+      updateNotePage(notebook.id, id, {
+        template: 'lined',
+        texts: [{ id: uid('text'), x: 0.08, y: 0.09, text: chunk.join('\n'), color: '#202636', size: 32 }],
+      })
+    }
+    setPageIndex(start)
+    setOcrOpen(false)
+    toast('已生成文字页', `${chunks.length} 页，可在页面上继续批注。`, 'success')
+  }
+
   const newNotebook = () => {
     const id = addNotebook({ title: '未命名笔记' })
     setActiveId(id)
@@ -513,6 +557,7 @@ export default function NotesApp({ params, winId }: AppProps) {
             <span className="notes-page-indicator">{pageList.length ? `${pageIndex + 1} / ${pageList.length}` : '0 / 0'}</span>
           </div>
           <div className="notes-head-actions">
+            <button className="btn sm" onClick={openOcr} disabled={!page}><ScanText size={12} /> 识别</button>
             <button className="btn sm" onClick={() => exportPng(true)}><Share2 size={12} /> 分享</button>
             <button className="btn sm" onClick={() => exportPng(false)}><Download size={12} /> PNG</button>
             <button className="btn primary sm" onClick={() => exportPdf(true)}><Download size={12} /> 保存 PDF</button>
@@ -525,6 +570,7 @@ export default function NotesApp({ params, winId }: AppProps) {
             <button className={cn('notes-tool', tool === 'marker' && 'active')} onClick={() => setTool('marker')} title="荧光笔"><Highlighter size={16} /></button>
             <button className={cn('notes-tool', tool === 'eraser' && 'active')} onClick={() => setTool('eraser')} title="橡皮（点击笔画）"><Eraser size={16} /></button>
             <button className={cn('notes-tool', tool === 'text' && 'active')} onClick={() => setTool('text')} title="文字"><Type size={16} /></button>
+            <button className="notes-tool" onClick={openOcr} disabled={!page} title="识别文字"><ScanText size={16} /></button>
           </div>
           <div className="notes-divider" />
           <div className="notes-colors">
@@ -592,6 +638,9 @@ export default function NotesApp({ params, winId }: AppProps) {
           <button className="text-btn" onClick={() => ecosystem.askAI({ prompt: `帮我基于「${notebook?.title}」这本手写笔记（${pageList.length} 页）整理一份结构化提纲。`, origin: 'notes' })}><Sparkles size={11} /> AI 整理</button>
         </footer>
       </main>
+      {ocrOpen && page && ocrImage && (
+        <NotesOcrModal page={page} image={ocrImage} title={notebook?.title ?? '笔记'} onClose={() => setOcrOpen(false)} onInsert={insertOcrText} />
+      )}
     </div>
   )
 }
@@ -605,4 +654,152 @@ function PageThumb({ page }: { page: NotePage }) {
     drawPage(ctx, page, 120, 170)
   }, [page])
   return <canvas ref={ref} width={120} height={170} className="page-thumb-canvas" />
+}
+
+function NotesOcrModal({ page, image, title, onClose, onInsert }: {
+  page: NotePage
+  image: string
+  title: string
+  onClose: () => void
+  onInsert: (text: string) => void
+}) {
+  const providers = useSystem((s) => s.providers)
+  const selectedProviderId = useSystem((s) => s.selectedProviderId)
+  const toast = useSystem((s) => s.toast)
+  const [engine, setEngine] = useState<'local' | 'ai'>('local')
+  const looksVision = (p: { model: string }) => /gpt-4o|gpt-4\.1|gpt-4v|gemini|claude|vision|qwen.*vl|glm-4v|llava/i.test(p.model)
+  const initialProvider = providers.find((p) => p.id === selectedProviderId && p.kind !== 'demo' && looksVision(p))?.id
+    ?? providers.find((p) => p.kind !== 'demo' && p.apiKey && looksVision(p))?.id
+    ?? providers.find((p) => p.id === selectedProviderId && p.kind !== 'demo')?.id
+    ?? providers.find((p) => p.kind !== 'demo')?.id ?? ''
+  const [providerId, setProviderId] = useState(initialProvider)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'working' | 'done' | 'error'>('idle')
+  const [progress, setProgress] = useState(0)
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  const workerRef = useRef<{ terminate: () => Promise<unknown> } | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const provider = providers.find((p) => p.id === providerId)
+  const providerReady = Boolean(provider && (provider.kind === 'ollama' || provider.apiKey))
+
+  useEffect(() => () => {
+    workerRef.current?.terminate().catch(() => {})
+    abortRef.current?.abort()
+  }, [])
+
+  const resetForEngine = (next: 'local' | 'ai') => {
+    abortRef.current?.abort()
+    setEngine(next)
+    setStatus('idle')
+    setProgress(0)
+    setText('')
+    setError('')
+  }
+
+  const clean = (raw: string) => raw.replace(/^```[a-z-]*\s*/i, '').replace(/```\s*$/, '').trim()
+
+  const run = async () => {
+    setStatus('loading')
+    setProgress(0.02)
+    setError('')
+    try {
+      if (engine === 'local') {
+        const { createWorker } = await import('tesseract.js')
+        const worker = await createWorker('chi_sim+eng', 1, {
+          logger: (m: { status: string; progress: number }) => {
+            if (m.status === 'recognizing text') { setStatus('working'); setProgress(m.progress) }
+          },
+        })
+        workerRef.current = worker
+        setStatus('working')
+        const result = await worker.recognize(image)
+        setText(clean(result.data.text).replace(/([\u3400-\u9fff]) +(?=[\u3400-\u9fff])/g, '$1'))
+        setStatus('done')
+        await worker.terminate()
+        workerRef.current = null
+      } else {
+        if (!provider) throw new Error('请选择 AI 视觉模型')
+        if (!providerReady) throw new Error('该模型还没有配置 API Key，请先到控制台 → AI 模型 配置。')
+        setStatus('working')
+        const controller = new AbortController()
+        abortRef.current = controller
+        const prompt = '你是 OCR 引擎。逐字转录图片中的手写和印刷文字，保留原有换行、编号、列表层级和标题。只输出转录文本，不要解释、不要总结、不要使用 Markdown 代码块。无法辨认的字用「□」。'
+        const result = await visionCompletion(provider, image, prompt, controller.signal)
+        setText(clean(result))
+        setStatus('done')
+        abortRef.current = null
+      }
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') { setStatus('idle'); return }
+      setStatus('error')
+      setError(e instanceof Error ? e.message : '识别失败')
+    }
+  }
+
+  const saveMarkdown = async () => {
+    if (!text.trim()) return
+    await ecosystem.saveText({
+      name: `OCR-${title}-${new Date().toISOString().slice(0, 10)}.md`,
+      text: `# ${title} · OCR\n\n> 来源：墨记第 ${page.id} 页\n\n${text}`,
+      mime: 'text/markdown',
+      folderName: '笔记',
+      sourceApp: 'notes',
+      tags: ['OCR', '笔记'],
+    })
+    toast('已保存到云巢', 'Markdown 文件已归档。', 'success')
+  }
+
+  return (
+    <div className="notes-ocr-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="notes-ocr-modal">
+        <header>
+          <div><span className="sheet-eyebrow">OCR · INK TO TEXT</span><h3>识别文字</h3></div>
+          <button className="icon-btn" onClick={onClose}><X size={17} /></button>
+        </header>
+        <div className="notes-ocr-source">
+          <img src={image} alt="" />
+          <div><strong>{title}</strong><span>当前页面 · 本地识别不上传</span></div>
+        </div>
+        <div className="notes-ocr-tabs">
+          <button className={cn(engine === 'local' && 'active')} onClick={() => resetForEngine('local')}><ScanText size={13} /><span><strong>本地 OCR</strong><small>印刷体 · 离线</small></span></button>
+          <button className={cn(engine === 'ai' && 'active')} onClick={() => resetForEngine('ai')}><Sparkles size={13} /><span><strong>AI 视觉</strong><small>手写优先 · 云端</small></span></button>
+        </div>
+        {engine === 'ai' && (
+          <div className="notes-ocr-provider">
+            <select value={providerId} onChange={(e) => setProviderId(e.target.value)}>
+              {providers.filter((p) => p.kind !== 'demo').map((p) => <option key={p.id} value={p.id}>{p.label} · {p.model}</option>)}
+            </select>
+            <span className="hint">{providerReady ? '请选支持图片输入的视觉模型（gpt-4o / Gemini / Claude 等）；图片会发送给所选服务商。' : '该模型未配置 API Key。'}</span>
+          </div>
+        )}
+        {status === 'idle' && (
+          <div className="notes-ocr-idle">
+            <strong>{engine === 'local' ? '识别印刷体或工整文字' : '识别手写内容'}</strong>
+            <p>{engine === 'local' ? '本地 Tesseract 中英文混合识别；首次运行需下载约 10–15 MB 语言包，页面图片不会上传。' : '调用你配置的视觉模型，适合手写、复杂版式和表格；图片会发送到对应服务商。'}</p>
+            <button className="btn primary" onClick={run} disabled={engine === 'ai' && !providerReady}><ScanText size={14} /> 开始识别</button>
+          </div>
+        )}
+        {(status === 'loading' || status === 'working') && (
+          <div className="notes-ocr-progress">
+            <span className="spinner" />
+            <strong>{status === 'loading' ? '正在准备识别引擎…' : engine === 'ai' ? '正在请视觉模型识别…' : '正在识别文字…'}</strong>
+            {engine === 'local' && <><div className="ocr-bar"><i style={{ width: `${Math.round(progress * 100)}%` }} /></div><span>{Math.round(progress * 100)}%</span></>}
+          </div>
+        )}
+        {status === 'error' && <div className="notes-ocr-idle error"><strong>识别失败</strong><p>{error}</p><button className="btn sm" onClick={run}>重试</button></div>}
+        {status === 'done' && (
+          <>
+            <textarea className="textarea notes-ocr-text" value={text} onChange={(e) => setText(e.target.value)} rows={11} placeholder="没有识别到文字，或结果为空。" />
+            <div className="notes-ocr-actions">
+              <span className="hint">{text.length} 字符 · 可编辑</span>
+              <span className="grow" />
+              <button className="btn sm" onClick={async () => { await copyText(text); toast('已复制识别文字', undefined, 'success') }}><Copy size={12} /> 复制</button>
+              <button className="btn sm" onClick={saveMarkdown}><Download size={12} /> 存为 Markdown</button>
+              <button className="btn primary sm" onClick={() => onInsert(text)} disabled={!text.trim()}><Check size={12} /> 生成文字页</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
 }
