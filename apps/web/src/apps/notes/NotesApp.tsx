@@ -151,8 +151,12 @@ export default function NotesApp({ params, winId }: AppProps) {
   const [fontTick, setFontTick] = useState(0)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const liveCanvasRef = useRef<HTMLCanvasElement>(null)
+  const tailCanvasRef = useRef<HTMLCanvasElement>(null)
   const liveStroke = useRef<Stroke | null>(null)
   const drawing = useRef(false)
+  const rawSeen = useRef(false)
+  const skipBaseRedraw = useRef(false)
+  const moveHandlerRef = useRef<(native: PointerEvent) => void>(() => {})
   const undoStack = useRef<Array<{ strokes: Stroke[]; texts: NoteText[] }>>([])
   const redoStack = useRef<Array<{ strokes: Stroke[]; texts: NoteText[] }>>([])
   const notebook = notebooks.find((n) => n.id === activeId) ?? notebooks[0]
@@ -174,6 +178,7 @@ export default function NotesApp({ params, winId }: AppProps) {
     undoStack.current = []
     redoStack.current = []
     liveStroke.current = null
+    skipBaseRedraw.current = false
     setTextBox(null)
     clearLive()
   }, [activeId, pageIndex])
@@ -181,7 +186,12 @@ export default function NotesApp({ params, winId }: AppProps) {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || !page) return
-    const ctx = canvas.getContext('2d')!
+    if (skipBaseRedraw.current) {
+      skipBaseRedraw.current = false
+      clearLive()
+      return
+    }
+    const ctx = canvas.getContext('2d', { desynchronized: true })!
     drawPage(ctx, page, MAX_W, MAX_H)
     clearLive()
   }, [page, fontTick])
@@ -226,8 +236,9 @@ export default function NotesApp({ params, winId }: AppProps) {
   }
 
   const clearLive = () => {
-    const c = liveCanvasRef.current
-    if (c) c.getContext('2d')!.clearRect(0, 0, c.width, c.height)
+    for (const c of [liveCanvasRef.current, tailCanvasRef.current]) {
+      if (c) c.getContext('2d', { desynchronized: true })!.clearRect(0, 0, c.width, c.height)
+    }
   }
 
   const styleLive = (ctx: CanvasRenderingContext2D) => {
@@ -241,67 +252,106 @@ export default function NotesApp({ params, winId }: AppProps) {
     ctx.globalAlpha = s.tool === 'marker' ? 0.3 : 1
   }
 
-  const drawLiveIncrement = () => {
+  const drawLiveBatch = (fromIndex: number) => {
     const s = liveStroke.current
     const canvas = liveCanvasRef.current
     if (!s || !canvas || !s.points.length) return
-    const ctx = canvas.getContext('2d')!
-    const pts = s.points.map((p) => ({ x: p.x * MAX_W, y: p.y * MAX_H }))
-    const n = pts.length
+    const ctx = canvas.getContext('2d', { desynchronized: true })!
+    const n = s.points.length
     ctx.save()
     styleLive(ctx)
     if (n === 1) {
       ctx.beginPath()
-      ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth / 2, 0, Math.PI * 2)
+      ctx.arc(s.points[0].x * MAX_W, s.points[0].y * MAX_H, ctx.lineWidth / 2, 0, Math.PI * 2)
       ctx.fill()
       ctx.restore()
       return
     }
-    const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
-    if (n === 2) {
-      const m = mid(pts[0], pts[1])
-      ctx.beginPath()
-      ctx.moveTo(pts[0].x, pts[0].y)
-      ctx.lineTo(m.x, m.y)
-      ctx.stroke()
-    } else {
-      const a = mid(pts[n - 3], pts[n - 2])
-      const b = mid(pts[n - 2], pts[n - 1])
-      ctx.beginPath()
-      ctx.moveTo(a.x, a.y)
-      ctx.quadraticCurveTo(pts[n - 2].x, pts[n - 2].y, b.x, b.y)
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
-
-  const finalizeLiveSegment = () => {
-    const s = liveStroke.current
-    const canvas = liveCanvasRef.current
-    if (!s || !canvas || s.points.length < 2) return
-    const ctx = canvas.getContext('2d')!
-    const a = s.points[s.points.length - 2]
-    const b = s.points[s.points.length - 1]
-    const ax = a.x * MAX_W, ay = a.y * MAX_H
-    const bx = b.x * MAX_W, by = b.y * MAX_H
-    const mx = (ax + bx) / 2, my = (ay + by) / 2
-    ctx.save()
-    styleLive(ctx)
     ctx.beginPath()
-    ctx.moveTo(mx, my)
-    ctx.lineTo(bx, by)
+    const px = (p: Point) => p.x * MAX_W
+    const py = (p: Point) => p.y * MAX_H
+    for (let i = Math.max(1, fromIndex); i < n; i++) {
+      if (i === 1) {
+        const a = s.points[0]
+        const b = s.points[1]
+        ctx.moveTo(px(a), py(a))
+        ctx.lineTo((px(a) + px(b)) / 2, (py(a) + py(b)) / 2)
+      } else {
+        const a = s.points[i - 2]
+        const b = s.points[i - 1]
+        const c = s.points[i]
+        ctx.moveTo((px(a) + px(b)) / 2, (py(a) + py(b)) / 2)
+        ctx.quadraticCurveTo(px(b), py(b), (px(b) + px(c)) / 2, (py(b) + py(c)) / 2)
+      }
+    }
     ctx.stroke()
     ctx.restore()
   }
 
-  const addLivePoint = (pt: Point) => {
+  const drawTail = () => {
     const s = liveStroke.current
-    if (!s) return
-    const last = s.points[s.points.length - 1]
-    if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 0.0008) return
-    s.points.push(pt)
-    drawLiveIncrement()
+    const canvas = tailCanvasRef.current
+    if (!s || !canvas || s.points.length < 2) return
+    const ctx = canvas.getContext('2d', { desynchronized: true })!
+    const a = s.points[s.points.length - 2]
+    const b = s.points[s.points.length - 1]
+    const mx = ((a.x + b.x) / 2) * MAX_W
+    const my = ((a.y + b.y) / 2) * MAX_H
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.save()
+    styleLive(ctx)
+    ctx.beginPath()
+    ctx.moveTo(mx, my)
+    ctx.lineTo(b.x * MAX_W, b.y * MAX_H)
+    ctx.stroke()
+    ctx.restore()
   }
+
+  const addLivePoints = (incoming: Point[]) => {
+    const s = liveStroke.current
+    if (!s || !incoming.length) return
+    const oldLength = s.points.length
+    for (const pt of incoming) {
+      const last = s.points[s.points.length - 1]
+      if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 0.0006) continue
+      s.points.push(pt)
+    }
+    if (s.points.length > oldLength) {
+      drawLiveBatch(oldLength)
+      drawTail()
+    }
+  }
+
+  const handleNativeMove = (native: PointerEvent) => {
+    if (!drawing.current || !liveStroke.current) return
+    const canvas = liveCanvasRef.current
+    if (!canvas) return
+    native.preventDefault()
+    const rect = canvas.getBoundingClientRect()
+    const coalesced = typeof native.getCoalescedEvents === 'function' ? native.getCoalescedEvents() : []
+    const events = coalesced.length ? coalesced : [native]
+    const points: Point[] = []
+    for (const ev of events) {
+      points.push({
+        x: Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height)),
+        p: ev.pressure > 0 ? ev.pressure : 0.5,
+      })
+    }
+    addLivePoints(points)
+  }
+  moveHandlerRef.current = handleNativeMove
+
+  useEffect(() => {
+    const canvas = liveCanvasRef.current
+    if (!canvas) return
+    const handler = (e: Event) => {
+      rawSeen.current = true
+      moveHandlerRef.current(e as PointerEvent)
+    }
+    canvas.addEventListener('pointerrawupdate', handler, { passive: false })
+    return () => canvas.removeEventListener('pointerrawupdate', handler)
+  }, [page?.id])
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!page) return
@@ -322,39 +372,38 @@ export default function NotesApp({ params, winId }: AppProps) {
     }
     e.preventDefault()
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    rawSeen.current = false
     clearLive()
     drawing.current = true
     liveStroke.current = { id: uid('stroke'), tool, color, width, points: [] }
-    addLivePoint(pt)
+    addLivePoints([pt])
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawing.current || !liveStroke.current) return
-    e.preventDefault()
-    const rect = e.currentTarget.getBoundingClientRect()
-    const native = e.nativeEvent as PointerEvent
-    const coalesced = typeof native.getCoalescedEvents === 'function' ? native.getCoalescedEvents() : []
-    const events = coalesced.length ? coalesced : [native]
-    for (const ev of events) {
-      const x = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
-      const y = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height))
-      addLivePoint({ x, y, p: ev.pressure > 0 ? ev.pressure : 0.5 })
-    }
+    if (rawSeen.current) return
+    handleNativeMove(e.nativeEvent as PointerEvent)
   }
 
   const finishStroke = (cancel = false) => {
     if (!drawing.current) return
     drawing.current = false
     const s = liveStroke.current
-    if (!cancel && s && s.points.length) {
-      finalizeLiveSegment()
-      if (page) commit({ strokes: [...page.strokes, s] })
+    if (!cancel && s && s.points.length && page) {
+      // Paint the committed stroke straight onto the base canvas. The state
+      // effect skips its full-page redraw once, so ending a stroke never
+      // re-renders every previous stroke.
+      const base = canvasRef.current
+      if (base) {
+        drawStroke(base.getContext('2d', { desynchronized: true })!, s, MAX_W, MAX_H, 1)
+        skipBaseRedraw.current = true
+        clearLive()
+        commit({ strokes: [...page.strokes, s] })
+      }
     } else {
       clearLive()
     }
     liveStroke.current = null
-    // The base-canvas redraw effect clears the overlay after the committed
-    // stroke has been painted, avoiding a one-frame blank.
   }
 
   const addText = () => {
@@ -502,6 +551,12 @@ export default function NotesApp({ params, winId }: AppProps) {
           <div className="notes-canvas-wrap" style={{ transform: `scale(${zoom})` }}>
             <div className="notes-canvas-stack">
               <canvas ref={canvasRef} width={MAX_W} height={MAX_H} className="notes-canvas" />
+              <canvas
+                ref={tailCanvasRef}
+                width={MAX_W}
+                height={MAX_H}
+                className="notes-canvas-tail"
+              />
               <canvas
                 ref={liveCanvasRef}
                 width={MAX_W}

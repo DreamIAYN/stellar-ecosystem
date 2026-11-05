@@ -1762,3 +1762,9 @@ input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border: 0; bo
 .notes-canvas-live { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 3px; touch-action: none; cursor: crosshair; }
 .notes-canvas-live.text-tool { cursor: text; }
 .notes-canvas-live.eraser-tool { cursor: cell; }
+
+/* Canvas apps pay a large compositing cost when every ink frame re-runs a
+   full-window backdrop blur. Keep the notes window opaque. */
+.window.win-app-notes { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: #080d17; }
+.notes-canvas-tail { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+.notes-canvas-live { z-index: 3; }
