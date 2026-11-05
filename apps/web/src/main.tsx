@@ -5,6 +5,7 @@ import '@fontsource-variable/noto-sans-sc'
 import './styles/base.css'
 import './styles/shell.css'
 import './styles/apps.css'
+import './styles/readability.css'
 import App from './App'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
