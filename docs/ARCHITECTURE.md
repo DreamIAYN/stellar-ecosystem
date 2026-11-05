@@ -83,8 +83,10 @@ Camera / File / Cloud
   → Homography（目标矩形 → 源四边形）
   → 逐像素重采样（上限 1700px）
   → 滤镜（original / enhance / magic / gray / bw / removeInk）
+  → 可选扫描级白底（分块纸张光照估计 + 背景归一化）
   → 可选锐化（Laplacian unsharp）
   → 可选 2× 双线性高清放大（浏览器高质量重采样）
+  → 可选手动框选黑笔清除（框内暗色 → 纸色回填）
   → JPEG data URL（页面预览 / OCR / PDF）
 ```
 

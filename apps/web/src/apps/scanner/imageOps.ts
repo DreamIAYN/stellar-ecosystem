@@ -2,6 +2,7 @@ export type Corner = [number, number]
 export type FilterId = 'original' | 'enhance' | 'magic' | 'gray' | 'bw' | 'removeInk'
 export type InkMode = 'redblue' | 'all'
 export interface InkOptions { mode: InkMode; preserve: boolean }
+export interface NormRect { x: number; y: number; w: number; h: number }
 
 export const FULL_CORNERS: Corner[] = [
   [0.035, 0.035],
@@ -81,6 +82,7 @@ export async function makeScan(
   maxSide = 1700,
   sharpen = 0,
   upscale = 1,
+  whiteBg = false,
 ): Promise<{ dataUrl: string; width: number; height: number }> {
   const img = await loadImageEl(original)
   const srcQuad: Corner[] = corners.map(([x, y]) => [x * img.naturalWidth, y * img.naturalHeight] as Corner)
@@ -153,9 +155,111 @@ export async function makeScan(
   const fctx = finalCanvas.getContext('2d', { willReadFrequently: true })!
   const finalData = fctx.getImageData(0, 0, finalCanvas.width, finalCanvas.height)
   applyFilter(finalData.data, finalCanvas.width, finalCanvas.height, filter, inkStrength, inkOptions)
+  if (whiteBg) applyWhiteBackground(finalData.data, finalCanvas.width, finalCanvas.height)
   if (sharpen > 0) applySharpen(finalData.data, finalCanvas.width, finalCanvas.height, sharpen)
   fctx.putImageData(finalData, 0, 0)
   return { dataUrl: finalCanvas.toDataURL('image/jpeg', 0.94), width: finalCanvas.width, height: finalCanvas.height }
+}
+
+function applyWhiteBackground(d: Uint8ClampedArray, w: number, h: number) {
+  const block = Math.max(28, Math.round(Math.min(w, h) / 22))
+  const cols = Math.ceil(w / block)
+  const rows = Math.ceil(h / block)
+  const bgR = new Float32Array(cols * rows)
+  const bgG = new Float32Array(cols * rows)
+  const bgB = new Float32Array(cols * rows)
+  let gr = 0, gg = 0, gb = 0, gn = 0
+  for (let y = 0; y < h; y += 5) {
+    for (let x = 0; x < w; x += 5) {
+      const i = (y * w + x) * 4
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+      const chroma = Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2])
+      if (lum > 150 && chroma < 45) { gr += d[i]; gg += d[i + 1]; gb += d[i + 2]; gn++ }
+    }
+  }
+  const globalR = gn ? gr / gn : 235
+  const globalG = gn ? gg / gn : 232
+  const globalB = gn ? gb / gn : 225
+
+  for (let by = 0; by < rows; by++) {
+    for (let bx = 0; bx < cols; bx++) {
+      const x0 = bx * block
+      const y0 = by * block
+      const x1 = Math.min(w, x0 + block)
+      const y1 = Math.min(h, y0 + block)
+      const hist = new Uint32Array(256)
+      let count = 0
+      for (let y = y0; y < y1; y += 2) {
+        for (let x = x0; x < x1; x += 2) {
+          const i = (y * w + x) * 4
+          hist[Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2])]++
+          count++
+        }
+      }
+      let acc = 0
+      let threshold = 160
+      const target = count * 0.78
+      for (let v = 0; v < 256; v++) {
+        acc += hist[v]
+        if (acc >= target) { threshold = v; break }
+      }
+      let sr = 0, sg = 0, sb = 0, sn = 0
+      for (let y = y0; y < y1; y += 2) {
+        for (let x = x0; x < x1; x += 2) {
+          const i = (y * w + x) * 4
+          const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+          if (lum >= threshold) { sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; sn++ }
+        }
+      }
+      const idx = by * cols + bx
+      if (sn > 10 && threshold > 130) {
+        bgR[idx] = sr / sn
+        bgG[idx] = sg / sn
+        bgB[idx] = sb / sn
+      } else {
+        bgR[idx] = globalR
+        bgG[idx] = globalG
+        bgB[idx] = globalB
+      }
+    }
+  }
+
+  const sample = (arr: Float32Array, gx: number, gy: number) => {
+    const x = Math.max(0, Math.min(cols - 1, gx))
+    const y = Math.max(0, Math.min(rows - 1, gy))
+    const x0 = Math.floor(x)
+    const y0 = Math.floor(y)
+    const x1 = Math.min(cols - 1, x0 + 1)
+    const y1 = Math.min(rows - 1, y0 + 1)
+    const fx = x - x0
+    const fy = y - y0
+    const a = arr[y0 * cols + x0] * (1 - fx) + arr[y0 * cols + x1] * fx
+    const b = arr[y1 * cols + x0] * (1 - fx) + arr[y1 * cols + x1] * fx
+    return a * (1 - fy) + b * fy
+  }
+
+  for (let y = 0; y < h; y++) {
+    const gy = y / block - 0.5
+    for (let x = 0; x < w; x++) {
+      const gx = x / block - 0.5
+      const br = Math.max(18, sample(bgR, gx, gy))
+      const bg = Math.max(18, sample(bgG, gx, gy))
+      const bb = Math.max(18, sample(bgB, gx, gy))
+      const i = (y * w + x) * 4
+      let r = d[i] * (246 / br)
+      let g = d[i + 1] * (246 / bg)
+      let b = d[i + 2] * (246 / bb)
+      r = r < 0 ? 0 : r > 255 ? 255 : r
+      g = g < 0 ? 0 : g > 255 ? 255 : g
+      b = b < 0 ? 0 : b > 255 ? 255 : b
+      const mn = Math.min(r, g, b)
+      const mx = Math.max(r, g, b)
+      if (mn > 232 || (mn > 208 && mx - mn < 26)) { r = 255; g = 255; b = 255 }
+      d[i] = r
+      d[i + 1] = g
+      d[i + 2] = b
+    }
+  }
 }
 
 function applySharpen(d: Uint8ClampedArray, w: number, h: number, amount: number) {
@@ -403,6 +507,51 @@ export async function rotateDataUrl(dataUrl: string): Promise<string> {
   ctx.translate(c.width / 2, c.height / 2)
   ctx.rotate(Math.PI / 2)
   ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2)
+  return c.toDataURL('image/jpeg', 0.94)
+}
+
+export async function removeBlackInk(dataUrl: string, boxes: NormRect[], threshold = 155): Promise<string> {
+  if (!boxes.length) return dataUrl
+  const img = await loadImageEl(dataUrl)
+  const c = document.createElement('canvas')
+  c.width = img.naturalWidth
+  c.height = img.naturalHeight
+  const ctx = c.getContext('2d', { willReadFrequently: true })!
+  ctx.drawImage(img, 0, 0)
+  const image = ctx.getImageData(0, 0, c.width, c.height)
+  const d = image.data
+  const w = c.width
+  const h = c.height
+  // Estimate a paper fill from bright, low-chroma pixels.
+  let pr = 0, pg = 0, pb = 0, pn = 0
+  for (let p = 0; p < w * h; p += 5) {
+    const i = p * 4
+    const r = d[i], g = d[i + 1], b = d[i + 2]
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b)
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if (lum > 165 && mx - mn < 16) { pr += r; pg += g; pb += b; pn++ }
+  }
+  const fillR = pn ? Math.round(pr / pn) : 255
+  const fillG = pn ? Math.round(pg / pn) : 255
+  const fillB = pn ? Math.round(pb / pn) : 255
+  for (const box of boxes) {
+    const x0 = Math.max(0, Math.floor(box.x * w))
+    const y0 = Math.max(0, Math.floor(box.y * h))
+    const x1 = Math.min(w - 1, Math.ceil((box.x + box.w) * w))
+    const y1 = Math.min(h - 1, Math.ceil((box.y + box.h) * h))
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * w + x) * 4
+        const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+        if (lum < threshold) {
+          d[i] = fillR
+          d[i + 1] = fillG
+          d[i + 2] = fillB
+        }
+      }
+    }
+  }
+  ctx.putImageData(image, 0, 0)
   return c.toDataURL('image/jpeg', 0.94)
 }
 

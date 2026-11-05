@@ -8,6 +8,7 @@ import {
   Copy,
   Crop,
   Download,
+  Eraser,
   Eye,
   EyeOff,
   FileScan,
@@ -35,7 +36,7 @@ import type { AppProps } from '../../components/AppRenderer'
 import { ecosystem } from '../../core/ecosystem'
 import { useSystem } from '../../core/store'
 import { cn, copyText, downloadBlob, loadImage } from '../../core/utils'
-import { autoCrop, fileToDataUrl, FULL_CORNERS, imageSize, makeScan, rotateDataUrl, type Corner, type FilterId, FILTERS } from './imageOps'
+import { autoCrop, fileToDataUrl, FULL_CORNERS, imageSize, makeScan, removeBlackInk, rotateDataUrl, type Corner, type FilterId, type NormRect, FILTERS } from './imageOps'
 
 type Mode = 'document' | 'exam' | 'idcard'
 
@@ -50,6 +51,8 @@ interface Page {
   filter: FilterId
   rotation: number
   hd: boolean
+  whiteBg: boolean
+  blackBoxes: NormRect[]
 }
 
 const MODES: { id: Mode; label: string; icon: typeof FileText; note: string }[] = [
@@ -77,6 +80,10 @@ export default function ScannerApp({ params, winId }: AppProps) {
   const [sharpen, setSharpen] = useState(0)
   const [compare, setCompare] = useState(false)
   const [dragging, setDragging] = useState(false)
+  const [blackSelectMode, setBlackSelectMode] = useState(false)
+  const [boxDraft, setBoxDraft] = useState<NormRect | null>(null)
+  const boxStart = useRef<{ x: number; y: number } | null>(null)
+  const boxDraftRef = useRef<NormRect | null>(null)
   const [watermark, setWatermark] = useState('仅供办理业务使用')
   const [pdfBusy, setPdfBusy] = useState(false)
   const [keepOriginal, setKeepOriginal] = useState(true)
@@ -127,6 +134,8 @@ export default function ScannerApp({ params, winId }: AppProps) {
         filter,
         rotation: 0,
         hd: false,
+        whiteBg: false,
+        blackBoxes: [],
       }
       setPages((prev) => [...prev, page])
       setActiveId(page.id)
@@ -163,18 +172,20 @@ export default function ScannerApp({ params, winId }: AppProps) {
 
   const reprocess = async (
     page: Page,
-    opts: { filter?: FilterId; corners?: Corner[]; strength?: number; hd?: boolean; sharpen?: number; inkMode?: 'redblue' | 'all'; preserveInk?: boolean } = {},
+    opts: { filter?: FilterId; corners?: Corner[]; strength?: number; hd?: boolean; sharpen?: number; whiteBg?: boolean; inkMode?: 'redblue' | 'all'; preserveInk?: boolean } = {},
   ) => {
     const filter = opts.filter ?? page.filter
     const corners = opts.corners ?? page.corners
     const strength = opts.strength ?? inkStrength
     const hd = opts.hd ?? page.hd
+    const whiteBg = opts.whiteBg ?? page.whiteBg
     const sharp = opts.sharpen ?? sharpen
     const ink = { mode: opts.inkMode ?? inkMode, preserve: opts.preserveInk ?? preserveInk }
     setBusy(true)
     try {
-      const result = await makeScan(page.original, corners, filter, strength, ink, hd ? 3200 : 1700, sharp, hd ? 2 : 1)
-      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: result.dataUrl, width: result.width, height: result.height, filter, corners, hd } : p)))
+      const result = await makeScan(page.original, corners, filter, strength, ink, hd ? 3200 : 1700, sharp, hd ? 2 : 1, whiteBg)
+      const cleaned = filter !== 'original' && page.blackBoxes?.length ? await removeBlackInk(result.dataUrl, page.blackBoxes) : result.dataUrl
+      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: cleaned, width: result.width, height: result.height, filter, corners, hd, whiteBg } : p)))
     } catch (e) {
       toast('处理失败', e instanceof Error ? e.message : '无法处理图片', 'error')
     } finally {
@@ -206,7 +217,72 @@ export default function ScannerApp({ params, winId }: AppProps) {
     const sharp = next ? Math.max(55, sharpen) : sharpen
     if (next) setSharpen(sharp)
     setCompare(false)
-    reprocess(active, { hd: next, sharpen: sharp })
+    reprocess(active, { hd: next, sharpen: sharp, whiteBg: next ? true : active.whiteBg })
+  }
+
+  const toggleWhiteBg = () => {
+    if (!active) return
+    setCompare(false)
+    reprocess(active, { whiteBg: !active.whiteBg })
+  }
+
+  const toggleBlackSelect = () => {
+    setCompare(false)
+    setCropMode(false)
+    setBlackSelectMode((v) => !v)
+  }
+
+  const boxPoint = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    return { x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) }
+  }
+
+  const startBlackBox = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!active) return
+    e.preventDefault()
+    const p = boxPoint(e)
+    boxStart.current = p
+    const draft = { x: p.x, y: p.y, w: 0, h: 0 }
+    boxDraftRef.current = draft
+    setBoxDraft(draft)
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+  }
+
+  const moveBlackBox = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!boxStart.current) return
+    const p = boxPoint(e)
+    const s0 = boxStart.current
+    const draft = { x: Math.min(s0.x, p.x), y: Math.min(s0.y, p.y), w: Math.abs(p.x - s0.x), h: Math.abs(p.y - s0.y) }
+    boxDraftRef.current = draft
+    setBoxDraft(draft)
+  }
+
+  const endBlackBox = () => {
+    const draft = boxDraftRef.current
+    boxStart.current = null
+    boxDraftRef.current = null
+    setBoxDraft(null)
+    if (draft && draft.w > 0.008 && draft.h > 0.008 && active) {
+      setPages((prev) => prev.map((p) => (p.id === active.id ? { ...p, blackBoxes: [...p.blackBoxes, draft] } : p)))
+      setBlackSelectMode(false)
+      toast('已框选黑笔区域', '点击「清除框内黑笔」执行；框内印刷内容也会被清除。', 'info')
+    }
+  }
+
+  const applyBlackErase = () => {
+    if (!active) return
+    if (!active.blackBoxes.length) return toast('还没有框选区域', '先框选要清除的黑色字迹。', 'info')
+    setCompare(false)
+    void reprocess(active)
+  }
+
+  const clearBlackBoxes = () => {
+    if (!active) return
+    const updated = { ...active, blackBoxes: [] }
+    setPages((prev) => prev.map((p) => (p.id === active.id ? updated : p)))
+    setBlackSelectMode(false)
+    toast('已清空黑笔框选', '处理结果会在下一次重算时恢复。', 'info')
+    void reprocess(updated)
   }
 
   const isScannerTop = () => {
@@ -262,7 +338,7 @@ export default function ScannerApp({ params, winId }: AppProps) {
     setBusy(true)
     const data = await rotateDataUrl(active.original)
     const size = await imageSize(data)
-    const updated = { ...active, original: data, corners: FULL_CORNERS, width: size.width, height: size.height, rotation: (active.rotation + 90) % 360 }
+    const updated = { ...active, original: data, corners: FULL_CORNERS, width: size.width, height: size.height, rotation: (active.rotation + 90) % 360, blackBoxes: [] }
     setPages((prev) => prev.map((p) => (p.id === active.id ? updated : p)))
     setBusy(false)
     reprocess(updated, { filter: updated.filter, corners: FULL_CORNERS })
@@ -291,6 +367,7 @@ export default function ScannerApp({ params, winId }: AppProps) {
 
   const changeMode = (m: Mode) => {
     setMode(m)
+    setBlackSelectMode(false)
     if (!active) return
     const filter = MODE_FILTER[m]
     setCropMode(false)
@@ -386,9 +463,10 @@ export default function ScannerApp({ params, winId }: AppProps) {
         <button className="scan-tool" onClick={() => setPickerOpen(true)} title="从云巢导入"><Upload size={18} /></button>
         <button className="scan-tool" onClick={pasteFromClipboard} title="粘贴截图（Ctrl/⌘+V）"><ClipboardPaste size={18} /></button>
         <div className="scan-rail-sep" />
-        <button className={cn('scan-tool', cropMode && 'active')} onClick={() => active && setCropMode((v) => !v)} title="裁剪 / 透视校正"><Crop size={18} /></button>
+        <button className={cn('scan-tool', cropMode && 'active')} onClick={() => { if (active) { setCropMode((v) => !v); setBlackSelectMode(false) } }} title="裁剪 / 透视校正"><Crop size={18} /></button>
         <button className="scan-tool" onClick={rotate} disabled={!active} title="旋转"><RotateCw size={18} /></button>
         <button className={cn('scan-tool', active?.hd && 'active')} onClick={toggleHd} disabled={!active} title="智能高清 2×"><Zap size={18} /></button>
+        <button className={cn('scan-tool', blackSelectMode && 'active')} onClick={toggleBlackSelect} disabled={!active} title="框选黑笔清除"><Eraser size={18} /></button>
         <button className="scan-tool" onClick={() => setOcrOpen(true)} disabled={!active} title="OCR 文字识别"><FileScan size={18} /></button>
         <div className="scan-rail-sep" />
         <button className="scan-tool" onClick={() => exportPdf(false)} disabled={!pages.length || pdfBusy} title="导出 PDF"><Download size={18} /></button>
@@ -404,6 +482,7 @@ export default function ScannerApp({ params, winId }: AppProps) {
           </div>
           <div className="scan-head-actions">
             <button className="btn sm" onClick={() => setOcrOpen(true)} disabled={!active}><FileScan size={13} /> OCR</button>
+            <button className={cn('btn sm scan-black-head', blackSelectMode && 'primary')} onClick={toggleBlackSelect} disabled={!active} title="框选黑笔清除"><Eraser size={13} /> 黑笔</button>
             <button className={cn('btn sm scan-hd-head', active?.hd && 'primary')} onClick={toggleHd} disabled={!active} title="本地 2× 智能高清"><Zap size={13} /> {active?.hd ? 'HD' : '高清'}</button>
             <button className="btn primary sm" onClick={() => exportPdf(true)} disabled={!pages.length || pdfBusy}>{pdfBusy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} 保存到云巢</button>
             <button className="icon-btn scan-mobile-panel" onClick={() => setPanelOpen((v) => !v)} aria-label="处理面板"><SlidersHorizontal size={17} /></button>
@@ -416,9 +495,9 @@ export default function ScannerApp({ params, winId }: AppProps) {
           ) : (
             <>
               <div className="scan-view-bar">
-                <div><strong>{active.name}</strong><span>{active.width} × {active.height}{active.hd ? ' · HD 2×' : ''} · {mode === 'exam' ? '试卷模式' : mode === 'idcard' ? '证件模式' : '文档模式'}</span></div>
+                <div><strong>{active.name}</strong><span>{active.width} × {active.height}{active.whiteBg ? ' · 白底' : ''}{active.hd ? ' · HD 2×' : ''} · {mode === 'exam' ? '试卷模式' : mode === 'idcard' ? '证件模式' : '文档模式'}</span></div>
                 <div className="scan-zoom">
-                  <button className={cn('btn sm scan-compare-btn', compare && 'primary')} onClick={() => setCompare((v) => !v)} title="对比未处理原图">{compare ? <EyeOff size={13} /> : <Eye size={13} />} {compare ? '处理结果' : '原图'}</button>
+                  <button className={cn('btn sm scan-compare-btn', compare && 'primary')} onClick={() => { setCompare((v) => !v); setBlackSelectMode(false) }} title="对比未处理原图">{compare ? <EyeOff size={13} /> : <Eye size={13} />} {compare ? '处理结果' : '原图'}</button>
                   <button className="icon-btn sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.15))}><Minus size={13} /></button>
                   <span>{Math.round(zoom * 100)}%</span>
                   <button className="icon-btn sm" onClick={() => setZoom((z) => Math.min(2.5, z + 0.15))}><Plus size={13} /></button>
@@ -436,6 +515,20 @@ export default function ScannerApp({ params, winId }: AppProps) {
                 ) : (
                   <div className="scan-page-view" style={{ transform: `scale(${zoom})` }}>
                     <img src={active.processed} alt={active.name} />
+                    <div
+                      className={cn('scan-black-layer', blackSelectMode && 'selecting')}
+                      onPointerDown={startBlackBox}
+                      onPointerMove={moveBlackBox}
+                      onPointerUp={endBlackBox}
+                      onPointerCancel={endBlackBox}
+                    >
+                      {active.blackBoxes.map((box, i) => (
+                        <div key={i} className="scan-black-rect" style={{ left: `${box.x * 100}%`, top: `${box.y * 100}%`, width: `${box.w * 100}%`, height: `${box.h * 100}%` }} />
+                      ))}
+                      {boxDraft && <div className="scan-black-rect draft" style={{ left: `${boxDraft.x * 100}%`, top: `${boxDraft.y * 100}%`, width: `${boxDraft.w * 100}%`, height: `${boxDraft.h * 100}%` }} />}
+                    </div>
+                    {blackSelectMode && <span className="scan-watermark-badge black-select-badge"><Eraser size={10} /> 拖动框选黑色字迹</span>}
+                    {active.whiteBg && <span className="scan-watermark-badge white-badge">扫描白底</span>}
                     {active.hd && <span className="scan-watermark-badge hd-badge"><Zap size={10} /> HD 2×</span>}
                     {mode === 'exam' && active.filter === 'removeInk' && <span className="scan-watermark-badge">去手写 · 彩色笔迹已清除</span>}
                   </div>
@@ -513,15 +606,33 @@ export default function ScannerApp({ params, winId }: AppProps) {
             style={{ '--progress': `${sharpen}%` } as React.CSSProperties}
           />
           <button className={cn('btn sm scan-hd-btn', active?.hd && 'primary')} onClick={toggleHd} disabled={!active}>
-            <Zap size={12} /> {active?.hd ? '智能高清已开启' : '智能高清 2×'}
+            <Zap size={12} /> {active?.hd ? '智能高清已开启' : '智能高清 · 白底 2×'}
           </button>
-          <p className="hint">本地双线性放大 + 锐化，提升观感；不会增加真实细节。</p>
+          <button className={cn('scan-white-row', active?.whiteBg && 'on')} onClick={toggleWhiteBg} disabled={!active}>
+            <span className={cn('switch', active?.whiteBg && 'on')} />
+            <span><strong>扫描级白底</strong><small>{active?.whiteBg ? '背景已漂白至扫描效果' : '只漂白背景，不放大'}</small></span>
+          </button>
+          <p className="hint">白底会按局部纸张光照做归一化；原图始终保留。智能高清同时开启白底 + 2× + 锐化。</p>
+        </div>
+
+        <div className="scan-slider-box scan-black-box">
+          <div className="scan-slider-label"><span>黑笔清除</span><strong>{active?.blackBoxes.length ?? 0} 区域</strong></div>
+          <p className="hint">黑色手写与印刷同色，无法自动区分。请只框选手写区域；框内印刷也会被清除，可清除框选后恢复。</p>
+          <div className="row gap-4" style={{ marginTop: 5 }}>
+            <button className={cn('btn sm', blackSelectMode && 'primary')} onClick={toggleBlackSelect} disabled={!active}>
+              <Eraser size={12} /> {blackSelectMode ? '完成' : '框选'}
+            </button>
+            <button className="btn sm grow scan-black-run" onClick={applyBlackErase} disabled={!active?.blackBoxes.length || busy}>
+              清除框内
+            </button>
+            <button className="btn sm" onClick={clearBlackBoxes} disabled={!active?.blackBoxes.length} title="清空框选并恢复处理"><Trash2 size={12} /></button>
+          </div>
         </div>
 
         <div className="scan-pages-head"><span className="section-title">页面</span><button className="icon-btn sm" onClick={() => fileInput.current?.click()}><Plus size={14} /></button></div>
         <div className="scan-pages scroll-y">
           {pages.map((p, i) => (
-            <div key={p.id} className={cn('scan-thumb', p.id === active?.id && 'active')} onClick={() => { setActiveId(p.id); setCropMode(false); setCompare(false) }}>
+            <div key={p.id} className={cn('scan-thumb', p.id === active?.id && 'active')} onClick={() => { setActiveId(p.id); setCropMode(false); setCompare(false); setBlackSelectMode(false) }}>
               <img src={p.processed} alt="" />
               <span className="scan-thumb-index">{i + 1}</span>
               {p.hd && <span className="scan-thumb-hd">HD</span>}
