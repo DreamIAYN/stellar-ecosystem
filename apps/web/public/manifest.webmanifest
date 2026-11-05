@@ -1,0 +1,23 @@
+{
+  "name": "星环 Stellar · 全生态工作空间",
+  "short_name": "星环",
+  "description": "开源、本地优先的全生态数字工作空间：IM、云盘、扫描、AI、会议、创作。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "lang": "zh-CN",
+  "categories": ["productivity", "social", "utilities"],
+  "icons": [
+    { "src": "./brand.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "扫描文件", "url": "./#scanner" },
+    { "name": "发起会议", "url": "./#meeting" },
+    { "name": "问 AI", "url": "./#ai" }
+  ]
+}

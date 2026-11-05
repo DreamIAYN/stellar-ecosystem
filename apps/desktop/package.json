@@ -1,0 +1,13 @@
+{
+  "name": "@stellar/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional Electron shell for Stellar",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}

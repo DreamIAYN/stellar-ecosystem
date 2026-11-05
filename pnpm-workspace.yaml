@@ -1,0 +1,8 @@
+packages:
+  - apps/web
+  - apps/server
+storeDir: .cache/pnpm-store
+onlyBuiltDependencies:
+  - esbuild
+  - tesseract.js
+  - core-js

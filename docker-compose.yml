@@ -1,0 +1,17 @@
+services:
+  stellar:
+    build: .
+    container_name: stellar
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      # TURN_URL: "turn:turn.example.com:3478"
+      # TURN_USERNAME: "stellar"
+      # TURN_CREDENTIAL: "change-me"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

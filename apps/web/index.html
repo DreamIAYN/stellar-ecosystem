@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#05070d" />
+    <meta name="description" content="星环 Stellar — 开源、本地优先、可自托管的全生态数字工作空间。IM、云盘、扫描、AI、会议、创作，在同一轨道运行。" />
+    <link rel="icon" type="image/svg+xml" href="./brand.svg" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <title>星环 Stellar · 全生态工作空间</title>
+    <style>
+      html,body{margin:0;background:#05070d;color:#f2f6ff;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+      #boot{position:fixed;inset:0;display:grid;place-items:center;z-index:99;background:radial-gradient(900px 600px at 50% 20%,#101a30 0%,#05070d 65%)}
+      .boot-inner{display:flex;flex-direction:column;align-items:center;gap:20px}
+      .boot-mark{width:64px;height:64px;border-radius:20px;background:linear-gradient(135deg,#69e6ff,#9b8cff 55%,#ff7ac8);box-shadow:0 0 80px rgba(105,230,255,.35);animation:breathe 2.4s ease-in-out infinite}
+      .boot-name{font-size:15px;letter-spacing:.35em;color:#c8d2e8;text-transform:uppercase}
+      .boot-bar{width:148px;height:2px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden}
+      .boot-bar:after{content:"";display:block;width:40%;height:100%;background:linear-gradient(90deg,transparent,#69e6ff,#9b8cff,transparent);animation:slide 1.4s ease-in-out infinite}
+      @keyframes breathe{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.06);opacity:1}}
+      @keyframes slide{0%{transform:translateX(-120%)}100%{transform:translateX(360%)}}
+    </style>
+  </head>
+  <body>
+    <div id="boot"><div class="boot-inner"><div class="boot-mark"></div><div class="boot-name">Stellar</div><div class="boot-bar"></div></div></div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

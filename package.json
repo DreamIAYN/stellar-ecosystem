@@ -1,0 +1,20 @@
+{
+  "name": "stellar-ecosystem",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "concurrently -n WEB,EDGE -c cyan,magenta \"pnpm --filter @stellar/web dev\" \"pnpm --filter @stellar/server dev\"",
+    "dev:web": "pnpm --filter @stellar/web dev",
+    "dev:server": "pnpm --filter @stellar/server dev",
+    "build": "pnpm --filter @stellar/web build && pnpm --filter @stellar/server build",
+    "start": "pnpm --filter @stellar/server start",
+    "typecheck": "pnpm -r typecheck",
+    "preview": "pnpm --filter @stellar/web preview"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}
