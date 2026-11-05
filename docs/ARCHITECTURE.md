@@ -83,10 +83,12 @@ Camera / File / Cloud
   → Homography（目标矩形 → 源四边形）
   → 逐像素重采样（上限 1700px）
   → 滤镜（original / enhance / magic / gray / bw / removeInk）
+  → 可选锐化（Laplacian unsharp）
+  → 可选 2× 双线性高清放大（浏览器高质量重采样）
   → JPEG data URL（页面预览 / OCR / PDF）
 ```
 
-`removeInk` 使用 HSV 饱和度 + 色度边缘判定，并针对抗锯齿边缘增加 `chroma + warm/cool` 条件，减少彩色笔迹残留。
+`removeInk` 使用 HSV 饱和度 + 红/蓝/品红色度判定，并针对抗锯齿边缘增加色度条件；默认只修改笔迹附近像素，其他像素原样保留。原图单独保存，支持对比与归档。
 
 ## 安全与限制
 

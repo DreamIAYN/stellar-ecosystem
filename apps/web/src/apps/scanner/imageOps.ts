@@ -1,5 +1,7 @@
 export type Corner = [number, number]
 export type FilterId = 'original' | 'enhance' | 'magic' | 'gray' | 'bw' | 'removeInk'
+export type InkMode = 'redblue' | 'all'
+export interface InkOptions { mode: InkMode; preserve: boolean }
 
 export const FULL_CORNERS: Corner[] = [
   [0.035, 0.035],
@@ -70,18 +72,30 @@ export async function fileToDataUrl(file: File): Promise<string> {
   })
 }
 
-export async function makeScan(original: string, corners: Corner[], filter: FilterId, inkStrength = 70, maxSide = 1700): Promise<{ dataUrl: string; width: number; height: number }> {
+export async function makeScan(
+  original: string,
+  corners: Corner[],
+  filter: FilterId,
+  inkStrength = 70,
+  inkOptions: InkOptions = { mode: 'redblue', preserve: true },
+  maxSide = 1700,
+  sharpen = 0,
+  upscale = 1,
+): Promise<{ dataUrl: string; width: number; height: number }> {
   const img = await loadImageEl(original)
   const srcQuad: Corner[] = corners.map(([x, y]) => [x * img.naturalWidth, y * img.naturalHeight] as Corner)
   const topW = dist(srcQuad[0], srcQuad[1])
   const bottomW = dist(srcQuad[3], srcQuad[2])
   const leftH = dist(srcQuad[0], srcQuad[3])
   const rightH = dist(srcQuad[1], srcQuad[2])
-  let w = Math.max(80, Math.round(Math.max(topW, bottomW)))
-  let h = Math.max(80, Math.round(Math.max(leftH, rightH)))
-  const scale = Math.min(1, maxSide / Math.max(w, h))
-  w = Math.max(80, Math.round(w * scale))
-  h = Math.max(80, Math.round(h * scale))
+  const baseW = Math.max(80, Math.round(Math.max(topW, bottomW)))
+  const baseH = Math.max(80, Math.round(Math.max(leftH, rightH)))
+  // Keep the homography pass bounded, then upscale in a separate high-quality
+  // draw. This is what makes local "smart HD" practical in the browser.
+  const cap = Math.max(320, Math.round(maxSide / Math.max(1, upscale)))
+  const warpScale = Math.min(1, cap / Math.max(baseW, baseH))
+  const w = Math.max(80, Math.round(baseW * warpScale))
+  const h = Math.max(80, Math.round(baseH * warpScale))
 
   const sourceCanvas = document.createElement('canvas')
   sourceCanvas.width = img.naturalWidth
@@ -89,11 +103,12 @@ export async function makeScan(original: string, corners: Corner[], filter: Filt
   const sctx = sourceCanvas.getContext('2d', { willReadFrequently: true })!
   sctx.drawImage(img, 0, 0)
   const src = sctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height)
-  const outCanvas = document.createElement('canvas')
-  outCanvas.width = w
-  outCanvas.height = h
-  const octx = outCanvas.getContext('2d', { willReadFrequently: true })!
-  const out = octx.createImageData(w, h)
+
+  const warpCanvas = document.createElement('canvas')
+  warpCanvas.width = w
+  warpCanvas.height = h
+  const wctx = warpCanvas.getContext('2d', { willReadFrequently: true })!
+  const out = wctx.createImageData(w, h)
   const H = perspectiveTransform(
     [
       [0, 0],
@@ -123,16 +138,55 @@ export async function makeScan(original: string, corners: Corner[], filter: Filt
       od[oi + 3] = 255
     }
   }
-  applyFilter(od, w, h, filter, inkStrength)
-  octx.putImageData(out, 0, 0)
-  return { dataUrl: outCanvas.toDataURL('image/jpeg', 0.92), width: w, height: h }
+  wctx.putImageData(out, 0, 0)
+
+  let finalCanvas = warpCanvas
+  if (upscale > 1) {
+    finalCanvas = document.createElement('canvas')
+    finalCanvas.width = Math.round(w * upscale)
+    finalCanvas.height = Math.round(h * upscale)
+    const fctx = finalCanvas.getContext('2d', { willReadFrequently: true })!
+    fctx.imageSmoothingEnabled = true
+    fctx.imageSmoothingQuality = 'high'
+    fctx.drawImage(warpCanvas, 0, 0, finalCanvas.width, finalCanvas.height)
+  }
+  const fctx = finalCanvas.getContext('2d', { willReadFrequently: true })!
+  const finalData = fctx.getImageData(0, 0, finalCanvas.width, finalCanvas.height)
+  applyFilter(finalData.data, finalCanvas.width, finalCanvas.height, filter, inkStrength, inkOptions)
+  if (sharpen > 0) applySharpen(finalData.data, finalCanvas.width, finalCanvas.height, sharpen)
+  fctx.putImageData(finalData, 0, 0)
+  return { dataUrl: finalCanvas.toDataURL('image/jpeg', 0.94), width: finalCanvas.width, height: finalCanvas.height }
+}
+
+function applySharpen(d: Uint8ClampedArray, w: number, h: number, amount: number) {
+  const a = Math.min(0.8, (amount / 100) * 0.55)
+  if (a <= 0.01) return
+  const src = new Uint8ClampedArray(d)
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - 1) * w
+    const y1 = y * w
+    const y2 = Math.min(h - 1, y + 1) * w
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - 1)
+      const x2 = Math.min(w - 1, x + 1)
+      const i = (y1 + x) * 4
+      for (let c = 0; c < 3; c++) {
+        const center = src[i + c]
+        const left = src[(y1 + x0) * 4 + c]
+        const right = src[(y1 + x2) * 4 + c]
+        const up = src[(y0 + x) * 4 + c]
+        const down = src[(y2 + x) * 4 + c]
+        d[i + c] = clamp8(center + a * (4 * center - left - right - up - down))
+      }
+    }
+  }
 }
 
 function dist(a: Corner, b: Corner) {
   return Math.hypot(a[0] - b[0], a[1] - b[1])
 }
 
-function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterId, strength: number) {
+function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterId, strength: number, inkOptions: InkOptions) {
   if (filter === 'original') return
   if (filter === 'gray') {
     for (let i = 0; i < d.length; i += 4) {
@@ -198,32 +252,43 @@ function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterI
     return
   }
   if (filter === 'removeInk') {
-    const satCut = 0.42 - (strength / 100) * 0.23
+    const satCut = 0.42 - (strength / 100) * 0.18
     const mask = new Uint8Array(w * h)
-    for (let i = 0; i < d.length; i += 4) {
-      let r = d[i], g = d[i + 1], b = d[i + 2]
+    const isInkHue = (r: number, g: number, b: number) => {
+      const red = r - Math.max(g, b) > 10
+      const blue = b - Math.max(r, g) > 8
+      const magenta = r - g > 9 && b - g > 7
+      return red || blue || magenta
+    }
+    for (let p = 0; p < w * h; p++) {
+      const i = p * 4
+      const r = d[i], g = d[i + 1], b = d[i + 2]
       const mx = Math.max(r, g, b)
       const mn = Math.min(r, g, b)
       const sat = mx === 0 ? 0 : (mx - mn) / mx
       const chroma = mx - mn
-      const warmEdge = r - (g + b) / 2 > 9
-      const coolEdge = b - (r + g) / 2 > 9
-      if ((sat > satCut && mx > 42) || (chroma > 13 && mx > 55 && (warmEdge || coolEdge))) {
-        // colored ink / highlighter (including anti-aliased fringe) -> paper white
+      const colored = inkOptions.mode === 'redblue' ? isInkHue(r, g, b) : true
+      const strongInk = sat > satCut && mx > 42 && colored
+      const fringe = chroma > 13 && mx > 55 && colored
+      if (strongInk || fringe) {
+        // Colored pen / highlighter / anti-aliased fringe -> paper white.
         d[i] = d[i + 1] = d[i + 2] = 255
-        mask[i >> 2] = 1
+        mask[p] = 1
         continue
       }
-      const lum = 0.299 * r + 0.587 * g + 0.114 * b
-      // whiten paper, deepen print
-      let v = (lum - 118) * 1.16 + 150
-      if (lum > 188) v = 255
-      if (lum < 92) v = Math.max(0, lum * 0.78)
-      v = clamp8(v)
-      d[i] = d[i + 1] = d[i + 2] = v
+      if (!inkOptions.preserve) {
+        // Optional gentle paper clean-up. Keeps the original hues and printed
+        // content intact; only lifts pale paper and deepens dark print.
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b
+        const gain = lum > 170 ? 1 + ((lum - 170) / 85) * 0.18 : lum < 95 ? 0.95 : 1
+        d[i] = clamp8(r * gain + 3)
+        d[i + 1] = clamp8(g * gain + 3)
+        d[i + 2] = clamp8(b * gain + 3)
+      }
     }
-    // Dilate the ink mask to erase anti-aliased halos left around pen strokes.
-    const radius = 3
+    // Dilate only around detected ink pixels so printed content away from the
+    // pen strokes is never touched.
+    const radius = 2
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         if (!mask[y * w + x]) continue

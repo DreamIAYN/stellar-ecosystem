@@ -1,12 +1,15 @@
 import {
   ArrowLeft,
   Camera,
+  ClipboardPaste,
   Check,
   ChevronLeft,
   ChevronRight,
   Copy,
   Crop,
   Download,
+  Eye,
+  EyeOff,
   FileScan,
   FileText,
   IdCard,
@@ -22,6 +25,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Zap,
   UserRound,
   Wand2,
   X,
@@ -45,6 +49,7 @@ interface Page {
   height: number
   filter: FilterId
   rotation: number
+  hd: boolean
 }
 
 const MODES: { id: Mode; label: string; icon: typeof FileText; note: string }[] = [
@@ -55,7 +60,7 @@ const MODES: { id: Mode; label: string; icon: typeof FileText; note: string }[] 
 
 const MODE_FILTER: Record<Mode, FilterId> = { document: 'magic', exam: 'removeInk', idcard: 'enhance' }
 
-export default function ScannerApp({ params }: AppProps) {
+export default function ScannerApp({ params, winId }: AppProps) {
   const files = useSystem((s) => s.files)
   const toast = useSystem((s) => s.toast)
   const [mode, setMode] = useState<Mode>((params.mode as Mode) || 'document')
@@ -67,11 +72,18 @@ export default function ScannerApp({ params }: AppProps) {
   const [cameraOpen, setCameraOpen] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [inkStrength, setInkStrength] = useState(72)
+  const [inkMode, setInkMode] = useState<'redblue' | 'all'>('redblue')
+  const [preserveInk, setPreserveInk] = useState(true)
+  const [sharpen, setSharpen] = useState(0)
+  const [compare, setCompare] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const [watermark, setWatermark] = useState('仅供办理业务使用')
   const [pdfBusy, setPdfBusy] = useState(false)
+  const [keepOriginal, setKeepOriginal] = useState(true)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const addFromDataUrlRef = useRef<((dataUrl: string, name: string, crop?: boolean) => Promise<void>) | null>(null)
   const autoSample = useRef(false)
   const active = pages.find((p) => p.id === activeId) ?? pages[0]
 
@@ -99,6 +111,7 @@ export default function ScannerApp({ params }: AppProps) {
   }, [params.fileId])
 
   const addFromDataUrl = async (dataUrl: string, name: string, crop = true) => {
+    setCompare(false)
     setBusy(true)
     try {
       const size = await imageSize(dataUrl)
@@ -113,11 +126,12 @@ export default function ScannerApp({ params }: AppProps) {
         height: size.height,
         filter,
         rotation: 0,
+        hd: false,
       }
       setPages((prev) => [...prev, page])
       setActiveId(page.id)
       setCropMode(crop)
-      const result = await makeScan(dataUrl, FULL_CORNERS, filter, inkStrength)
+      const result = await makeScan(dataUrl, FULL_CORNERS, filter, inkStrength, { mode: inkMode, preserve: preserveInk }, 1700, 0, 1)
       setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: result.dataUrl, width: result.width, height: result.height } : p)))
     } catch (e) {
       toast('导入失败', e instanceof Error ? e.message : '无法读取图片', 'error')
@@ -125,6 +139,8 @@ export default function ScannerApp({ params }: AppProps) {
       setBusy(false)
     }
   }
+
+  addFromDataUrlRef.current = addFromDataUrl
 
   const loadFromFile = async (fileId: string) => {
     const f = files.find((x) => x.id === fileId)
@@ -145,11 +161,20 @@ export default function ScannerApp({ params }: AppProps) {
     if (fileInput.current) fileInput.current.value = ''
   }
 
-  const reprocess = async (page: Page, filter = page.filter, corners = page.corners, strength = inkStrength) => {
+  const reprocess = async (
+    page: Page,
+    opts: { filter?: FilterId; corners?: Corner[]; strength?: number; hd?: boolean; sharpen?: number; inkMode?: 'redblue' | 'all'; preserveInk?: boolean } = {},
+  ) => {
+    const filter = opts.filter ?? page.filter
+    const corners = opts.corners ?? page.corners
+    const strength = opts.strength ?? inkStrength
+    const hd = opts.hd ?? page.hd
+    const sharp = opts.sharpen ?? sharpen
+    const ink = { mode: opts.inkMode ?? inkMode, preserve: opts.preserveInk ?? preserveInk }
     setBusy(true)
     try {
-      const result = await makeScan(page.original, corners, filter, strength)
-      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: result.dataUrl, width: result.width, height: result.height, filter, corners } : p)))
+      const result = await makeScan(page.original, corners, filter, strength, ink, hd ? 3200 : 1700, sharp, hd ? 2 : 1)
+      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, processed: result.dataUrl, width: result.width, height: result.height, filter, corners, hd } : p)))
     } catch (e) {
       toast('处理失败', e instanceof Error ? e.message : '无法处理图片', 'error')
     } finally {
@@ -157,10 +182,79 @@ export default function ScannerApp({ params }: AppProps) {
     }
   }
 
+  const changeSharpen = (value: number, commit = false) => {
+    setSharpen(value)
+    if (commit && active) reprocess(active, { sharpen: value })
+  }
+
+  const changeInkMode = (next: 'redblue' | 'all') => {
+    setInkMode(next)
+    setCompare(false)
+    if (active?.filter === 'removeInk') reprocess(active, { filter: 'removeInk', inkMode: next })
+  }
+
+  const togglePreserveInk = () => {
+    const next = !preserveInk
+    setPreserveInk(next)
+    setCompare(false)
+    if (active?.filter === 'removeInk') reprocess(active, { filter: 'removeInk', preserveInk: next })
+  }
+
+  const toggleHd = () => {
+    if (!active) return
+    const next = !active.hd
+    const sharp = next ? Math.max(55, sharpen) : sharpen
+    if (next) setSharpen(sharp)
+    setCompare(false)
+    reprocess(active, { hd: next, sharpen: sharp })
+  }
+
+  const isScannerTop = () => {
+    const top = [...useSystem.getState().windows].filter((w) => !w.minimized).sort((a, b) => b.z - a.z)[0]
+    return top?.id === winId
+  }
+
+  const pasteFromClipboard = async () => {
+    try {
+      if (!navigator.clipboard?.read) throw new Error('unsupported')
+      const items = await navigator.clipboard.read()
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'))
+        if (!type) continue
+        const blob = await item.getType(type)
+        const data = await fileToDataUrl(new File([blob], `剪贴板-${Date.now()}.png`, { type }))
+        await addFromDataUrlRef.current?.(data, `剪贴板-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}.png`, true)
+        toast('已粘贴剪贴板图片', '可以继续拖动四点进行裁剪。', 'success')
+        return
+      }
+      toast('剪贴板里没有图片', '先截图或复制图片，再按 Ctrl/⌘+V。', 'info')
+    } catch {
+      toast('无法直接读取剪贴板', '点击扫描师窗口后按 Ctrl/⌘+V 粘贴截图。', 'info')
+    }
+  }
+
+  useEffect(() => {
+    const onPaste = async (e: ClipboardEvent) => {
+      if (!e.clipboardData || !isScannerTop()) return
+      const item = Array.from(e.clipboardData.items).find((i) => i.kind === 'file' && i.type.startsWith('image/'))
+      if (!item) return
+      const file = item.getAsFile()
+      if (!file) return
+      e.preventDefault()
+      const data = await fileToDataUrl(file)
+      await addFromDataUrlRef.current?.(data, file.name || `剪贴板-${new Date().toLocaleTimeString('zh-CN', { hour12: false })}.png`, true)
+      toast('已从剪贴板添加图片', 'Ctrl/⌘+V 可直接粘贴更多截图。', 'success')
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [winId, toast])
+
   const chooseFilter = (filter: FilterId) => {
     if (!active) return
     setPages((prev) => prev.map((p) => (p.id === active.id ? { ...p, filter } : p)))
-    reprocess(active, filter)
+    reprocess(active, { filter })
+    setCompare(false)
   }
 
   const rotate = async () => {
@@ -171,13 +265,13 @@ export default function ScannerApp({ params }: AppProps) {
     const updated = { ...active, original: data, corners: FULL_CORNERS, width: size.width, height: size.height, rotation: (active.rotation + 90) % 360 }
     setPages((prev) => prev.map((p) => (p.id === active.id ? updated : p)))
     setBusy(false)
-    reprocess(updated, updated.filter, FULL_CORNERS)
+    reprocess(updated, { filter: updated.filter, corners: FULL_CORNERS })
   }
 
   const applyCrop = () => {
     if (!active) return
     setCropMode(false)
-    reprocess(active, active.filter, active.corners)
+    reprocess(active, { filter: active.filter, corners: active.corners })
   }
 
   const autoDetect = async () => {
@@ -200,7 +294,8 @@ export default function ScannerApp({ params }: AppProps) {
     if (!active) return
     const filter = MODE_FILTER[m]
     setCropMode(false)
-    reprocess(active, filter)
+    reprocess(active, { filter })
+    setCompare(false)
   }
 
   const loadSample = async (m: Mode = mode) => {
@@ -219,33 +314,47 @@ export default function ScannerApp({ params }: AppProps) {
     }
   }
 
-  const exportPdf = async (saveToDrive: boolean) => {
+  const buildPdf = async (useOriginal: boolean) => {
+    const { jsPDF } = await import('jspdf')
+    const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
+    for (let i = 0; i < pages.length; i++) {
+      let src = pages[i].processed
+      if (useOriginal) {
+        const plain = await makeScan(pages[i].original, pages[i].corners, 'original', inkStrength, { mode: inkMode, preserve: true }, 3200, 0, 1)
+        src = plain.dataUrl
+      }
+      if (mode === 'idcard' && watermark.trim()) src = await watermarkDataUrl(src, watermark.trim())
+      const img = await loadImage(src)
+      const pw = 210
+      const ph = 297
+      const margin = 12
+      const maxW = pw - margin * 2
+      const maxH = ph - margin * 2
+      const ratio = Math.min(maxW / img.width, maxH / img.height)
+      const w = img.width * ratio
+      const h = img.height * ratio
+      if (i > 0) doc.addPage()
+      doc.addImage(src, 'JPEG', (pw - w) / 2, (ph - h) / 2, w, h, undefined, 'FAST')
+    }
+    const name = `扫描件-${new Date().toISOString().slice(0, 10)}${useOriginal ? '-原图' : ''}.pdf`
+    return { blob: doc.output('blob'), name }
+  }
+
+  const exportPdf = async (saveToDrive: boolean, useOriginal = false) => {
     if (!pages.length) return
     setPdfBusy(true)
     try {
-      const { jsPDF } = await import('jspdf')
-      const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
-      for (let i = 0; i < pages.length; i++) {
-        let src = pages[i].processed
-        if (mode === 'idcard' && watermark.trim()) src = await watermarkDataUrl(src, watermark.trim())
-        const img = await loadImage(src)
-        const pw = 210
-        const ph = 297
-        const margin = 12
-        const maxW = pw - margin * 2
-        const maxH = ph - margin * 2
-        const ratio = Math.min(maxW / img.width, maxH / img.height)
-        const w = img.width * ratio
-        const h = img.height * ratio
-        if (i > 0) doc.addPage()
-        doc.addImage(src, 'JPEG', (pw - w) / 2, (ph - h) / 2, w, h, undefined, 'FAST')
-      }
-      const blob = doc.output('blob')
-      const name = `扫描件-${new Date().toISOString().slice(0, 10)}.pdf`
+      const { blob, name } = await buildPdf(useOriginal)
       if (saveToDrive) {
-        const saved = await ecosystem.saveFile({ name, mime: 'application/pdf', blob, folderName: '扫描件', sourceApp: 'scanner', tags: ['扫描'] })
-        toast('已保存到云巢', `${saved.name} · ${pages.length} 页`, 'success')
-        useSystem.getState().notify({ appId: 'scanner', title: '扫描件已保存', body: `${saved.name} 已写入云巢「扫描件」。`, action: { appId: 'drive', params: { folderId: 'folder-scans' } } })
+        const saved = await ecosystem.saveFile({ name, mime: 'application/pdf', blob, folderName: '扫描件', sourceApp: 'scanner', tags: useOriginal ? ['扫描', '原图'] : ['扫描'] })
+        let extra = ''
+        if (!useOriginal && keepOriginal) {
+          const original = await buildPdf(true)
+          await ecosystem.saveFile({ name: original.name, mime: 'application/pdf', blob: original.blob, folderName: '扫描件', sourceApp: 'scanner', tags: ['扫描', '原图'] })
+          extra = ' · 原图已同时归档'
+        }
+        toast('已保存到云巢', `${saved.name} · ${pages.length} 页${extra}`, 'success')
+        useSystem.getState().notify({ appId: 'scanner', title: '扫描件已保存', body: `${saved.name} 已写入云巢「扫描件」${extra}。`, action: { appId: 'drive', params: { folderId: 'folder-scans' } } })
       } else {
         downloadBlob(blob, name)
         toast('PDF 已导出', `${name} · ${pages.length} 页`, 'success')
@@ -265,14 +374,21 @@ export default function ScannerApp({ params }: AppProps) {
   const filterInfo = FILTERS.find((f) => f.id === active?.filter)
 
   return (
-    <div className={cn('scanner', panelOpen && 'panel-open')}>
+    <div
+      className={cn('scanner', panelOpen && 'panel-open', dragging && 'dragging')}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => { e.preventDefault(); setDragging(false); handleImports(e.dataTransfer.files) }}
+    >
       <aside className="scan-rail">
         <button className="scan-tool primary" onClick={() => setCameraOpen(true)} title="拍照扫描"><Camera size={19} /></button>
         <button className="scan-tool" onClick={() => fileInput.current?.click()} title="导入图片"><ImageIcon size={18} /></button>
         <button className="scan-tool" onClick={() => setPickerOpen(true)} title="从云巢导入"><Upload size={18} /></button>
+        <button className="scan-tool" onClick={pasteFromClipboard} title="粘贴截图（Ctrl/⌘+V）"><ClipboardPaste size={18} /></button>
         <div className="scan-rail-sep" />
-        <button className={cn('scan-tool', cropMode && 'active')} onClick={() => active && setCropMode((v) => !v)} title="透视裁剪"><Crop size={18} /></button>
+        <button className={cn('scan-tool', cropMode && 'active')} onClick={() => active && setCropMode((v) => !v)} title="裁剪 / 透视校正"><Crop size={18} /></button>
         <button className="scan-tool" onClick={rotate} disabled={!active} title="旋转"><RotateCw size={18} /></button>
+        <button className={cn('scan-tool', active?.hd && 'active')} onClick={toggleHd} disabled={!active} title="智能高清 2×"><Zap size={18} /></button>
         <button className="scan-tool" onClick={() => setOcrOpen(true)} disabled={!active} title="OCR 文字识别"><FileScan size={18} /></button>
         <div className="scan-rail-sep" />
         <button className="scan-tool" onClick={() => exportPdf(false)} disabled={!pages.length || pdfBusy} title="导出 PDF"><Download size={18} /></button>
@@ -288,6 +404,7 @@ export default function ScannerApp({ params }: AppProps) {
           </div>
           <div className="scan-head-actions">
             <button className="btn sm" onClick={() => setOcrOpen(true)} disabled={!active}><FileScan size={13} /> OCR</button>
+            <button className={cn('btn sm scan-hd-head', active?.hd && 'primary')} onClick={toggleHd} disabled={!active} title="本地 2× 智能高清"><Zap size={13} /> {active?.hd ? 'HD' : '高清'}</button>
             <button className="btn primary sm" onClick={() => exportPdf(true)} disabled={!pages.length || pdfBusy}>{pdfBusy ? <Loader2 size={13} className="spin" /> : <Check size={13} />} 保存到云巢</button>
             <button className="icon-btn scan-mobile-panel" onClick={() => setPanelOpen((v) => !v)} aria-label="处理面板"><SlidersHorizontal size={17} /></button>
           </div>
@@ -295,12 +412,13 @@ export default function ScannerApp({ params }: AppProps) {
 
         <div className="scan-work">
           {!active ? (
-            <ScanEmpty mode={mode} onCamera={() => setCameraOpen(true)} onImport={() => fileInput.current?.click()} onSample={() => loadSample(mode)} onFiles={() => setPickerOpen(true)} />
+            <ScanEmpty mode={mode} onCamera={() => setCameraOpen(true)} onImport={() => fileInput.current?.click()} onPaste={pasteFromClipboard} onSample={() => loadSample(mode)} onFiles={() => setPickerOpen(true)} />
           ) : (
             <>
               <div className="scan-view-bar">
-                <div><strong>{active.name}</strong><span>{active.width} × {active.height} · {mode === 'exam' ? '试卷模式' : mode === 'idcard' ? '证件模式' : '文档模式'}</span></div>
+                <div><strong>{active.name}</strong><span>{active.width} × {active.height}{active.hd ? ' · HD 2×' : ''} · {mode === 'exam' ? '试卷模式' : mode === 'idcard' ? '证件模式' : '文档模式'}</span></div>
                 <div className="scan-zoom">
+                  <button className={cn('btn sm scan-compare-btn', compare && 'primary')} onClick={() => setCompare((v) => !v)} title="对比未处理原图">{compare ? <EyeOff size={13} /> : <Eye size={13} />} {compare ? '处理结果' : '原图'}</button>
                   <button className="icon-btn sm" onClick={() => setZoom((z) => Math.max(0.5, z - 0.15))}><Minus size={13} /></button>
                   <span>{Math.round(zoom * 100)}%</span>
                   <button className="icon-btn sm" onClick={() => setZoom((z) => Math.min(2.5, z + 0.15))}><Plus size={13} /></button>
@@ -310,9 +428,15 @@ export default function ScannerApp({ params }: AppProps) {
               <div className="scan-viewport">
                 {cropMode ? (
                   <CropView page={active} zoom={zoom} onChange={(corners) => setPages((prev) => prev.map((p) => (p.id === active.id ? { ...p, corners } : p)))} />
+                ) : compare ? (
+                  <div className="scan-page-view" style={{ transform: `scale(${zoom})` }}>
+                    <img src={active.original} alt={`${active.name} 原图`} />
+                    <span className="scan-watermark-badge compare">原图 · 未处理（再次点击「处理结果」返回）</span>
+                  </div>
                 ) : (
                   <div className="scan-page-view" style={{ transform: `scale(${zoom})` }}>
                     <img src={active.processed} alt={active.name} />
+                    {active.hd && <span className="scan-watermark-badge hd-badge"><Zap size={10} /> HD 2×</span>}
                     {mode === 'exam' && active.filter === 'removeInk' && <span className="scan-watermark-badge">去手写 · 彩色笔迹已清除</span>}
                   </div>
                 )}
@@ -332,7 +456,7 @@ export default function ScannerApp({ params }: AppProps) {
           )}
         </div>
         <footer className="scan-foot">
-          <span><span className="dot pulse" /> 图片只在本地处理 · 不上传服务器</span>
+          <span><span className="dot pulse" /> 本地处理 · 支持 Ctrl/⌘+V 粘贴截图</span>
           <span>{mode === 'exam' ? '去手写对红/蓝笔迹最有效；黑色笔迹与印刷体重叠，无法保证完全分离。' : mode === 'idcard' ? '证件模式会在导出时加上自定义水印。' : '支持 JPG / PNG / SVG / HEIC（由浏览器解码）。'}</span>
           <span>{pages.length} 页</span>
         </footer>
@@ -354,8 +478,21 @@ export default function ScannerApp({ params }: AppProps) {
         {mode === 'exam' && (
           <div className="scan-slider-box">
             <div className="scan-slider-label"><span>去手写强度</span><strong>{inkStrength}%</strong></div>
-            <input type="range" min={20} max={100} value={inkStrength} onChange={(e) => setInkStrength(Number(e.target.value))} onPointerUp={() => active && reprocess(active, 'removeInk', active.corners, inkStrength)} style={{ '--progress': `${inkStrength}%` } as React.CSSProperties} />
-            <p className="hint">强度越高，越多彩色像素被判定为笔迹。建议 65–80%。</p>
+            <input
+              type="range" min={20} max={100} value={inkStrength}
+              onChange={(e) => setInkStrength(Number(e.target.value))}
+              onPointerUp={(e) => active && reprocess(active, { filter: 'removeInk', strength: Number(e.currentTarget.value) })}
+              style={{ '--progress': `${inkStrength}%` } as React.CSSProperties}
+            />
+            <div className="segmented scan-inkmode">
+              <button className={inkMode === 'redblue' ? 'active' : ''} onClick={() => changeInkMode('redblue')}>红/蓝笔迹</button>
+              <button className={inkMode === 'all' ? 'active' : ''} onClick={() => changeInkMode('all')}>所有彩色</button>
+            </div>
+            <button className={cn('scan-preserve', preserveInk && 'on')} onClick={togglePreserveInk}>
+              <span className={cn('switch', preserveInk && 'on')} />
+              <span><strong>仅去除笔迹</strong><small>{preserveInk ? '其他像素保持原样' : '同时轻提纸面亮度'}</small></span>
+            </button>
+            <p className="hint">默认只处理红/蓝笔迹附近像素；原图始终保留，可点「原图」对比。</p>
           </div>
         )}
 
@@ -367,12 +504,27 @@ export default function ScannerApp({ params }: AppProps) {
           </div>
         )}
 
+        <div className="scan-slider-box scan-sharp-box">
+          <div className="scan-slider-label"><span>锐化</span><strong>{sharpen}%</strong></div>
+          <input
+            type="range" min={0} max={100} value={sharpen} disabled={!active}
+            onChange={(e) => changeSharpen(Number(e.target.value))}
+            onPointerUp={(e) => active && reprocess(active, { sharpen: Number(e.currentTarget.value) })}
+            style={{ '--progress': `${sharpen}%` } as React.CSSProperties}
+          />
+          <button className={cn('btn sm scan-hd-btn', active?.hd && 'primary')} onClick={toggleHd} disabled={!active}>
+            <Zap size={12} /> {active?.hd ? '智能高清已开启' : '智能高清 2×'}
+          </button>
+          <p className="hint">本地双线性放大 + 锐化，提升观感；不会增加真实细节。</p>
+        </div>
+
         <div className="scan-pages-head"><span className="section-title">页面</span><button className="icon-btn sm" onClick={() => fileInput.current?.click()}><Plus size={14} /></button></div>
         <div className="scan-pages scroll-y">
           {pages.map((p, i) => (
-            <div key={p.id} className={cn('scan-thumb', p.id === active?.id && 'active')} onClick={() => { setActiveId(p.id); setCropMode(false) }}>
+            <div key={p.id} className={cn('scan-thumb', p.id === active?.id && 'active')} onClick={() => { setActiveId(p.id); setCropMode(false); setCompare(false) }}>
               <img src={p.processed} alt="" />
               <span className="scan-thumb-index">{i + 1}</span>
+              {p.hd && <span className="scan-thumb-hd">HD</span>}
               <button className="scan-thumb-del" onClick={(e) => { e.stopPropagation(); deletePage(p.id) }}><X size={10} /></button>
             </div>
           ))}
@@ -381,14 +533,20 @@ export default function ScannerApp({ params }: AppProps) {
 
         <div className="scan-export">
           <button className="btn primary" onClick={() => exportPdf(true)} disabled={!pages.length || pdfBusy}><Check size={14} /> 保存 PDF 到云巢</button>
+          <button className={cn('scan-keep-original', keepOriginal && 'on')} onClick={() => setKeepOriginal((v) => !v)}>
+            <span className={cn('switch', keepOriginal && 'on')} />
+            <span><strong>同时归档原图</strong><small>处理只改副本，原图仍可找回</small></span>
+          </button>
           <div className="row gap-6">
             <button className="btn sm grow" onClick={() => exportPdf(false)} disabled={!pages.length || pdfBusy}><Download size={13} /> 导出 PDF</button>
             <button className="btn sm grow" onClick={sharePage} disabled={!active}><Share2 size={13} /> 分享</button>
           </div>
+          <button className="btn sm" onClick={() => exportPdf(false, true)} disabled={!pages.length || pdfBusy}><Download size={13} /> 导出原图 PDF（不处理）</button>
           <button className="btn sm" onClick={() => active && ecosystem.askAI({ prompt: `请帮我把这份扫描件的要点整理成结构化笔记。文件：${active.name}`, origin: 'scanner', autoSend: true })} disabled={!active}><Sparkles size={13} /> 用 AI 整理扫描件</button>
         </div>
       </aside>
 
+      {dragging && <div className="scan-drop"><Upload size={26} /><strong>松开以导入图片</strong><span>支持截图、照片与云巢 SVG</span></div>}
       {cameraOpen && <CameraModal mode={mode} onClose={() => setCameraOpen(false)} onCapture={async (data) => { setCameraOpen(false); await addFromDataUrl(data, `扫描-${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}.jpg`, true) }} onImport={() => { setCameraOpen(false); fileInput.current?.click() }} />}
       {ocrOpen && active && <OcrModal page={active} onClose={() => setOcrOpen(false)} />}
       {pickerOpen && <CloudPicker onClose={() => setPickerOpen(false)} onPick={async (id) => { setPickerOpen(false); await loadFromFile(id) }} />}
@@ -397,7 +555,7 @@ export default function ScannerApp({ params }: AppProps) {
   )
 }
 
-function ScanEmpty({ mode, onCamera, onImport, onSample, onFiles }: { mode: Mode; onCamera: () => void; onImport: () => void; onSample: () => void; onFiles: () => void }) {
+function ScanEmpty({ mode, onCamera, onImport, onPaste, onSample, onFiles }: { mode: Mode; onCamera: () => void; onImport: () => void; onPaste: () => void; onSample: () => void; onFiles: () => void }) {
   return (
     <div className="scan-empty">
       <div className="scan-empty-art">
@@ -410,16 +568,18 @@ function ScanEmpty({ mode, onCamera, onImport, onSample, onFiles }: { mode: Mode
       </div>
       <span className="sheet-eyebrow">LENS SCANNER</span>
       <h2>{mode === 'exam' ? '把写满答案的试卷，还原成一张干净的卷子。' : mode === 'idcard' ? '证件扫描，自动裁边、加水印、双面归档。' : '把纸上的世界，变成可编辑的数字文件。'}</h2>
-      <p>四点透视校正 · 魔法白增强 · 试卷去手写 · OCR · PDF 导出。所有处理都在你的浏览器里完成。</p>
+      <p>四点透视裁剪 · 魔法白增强 · 试卷去手写 · 锐化 · 智能高清 2× · OCR · PDF 导出。所有处理都在你的浏览器里完成。</p>
       <div className="scan-empty-actions">
         <button className="btn primary lg" onClick={onCamera}><Camera size={16} /> 拍照扫描</button>
         <button className="btn lg" onClick={onImport}><Upload size={16} /> 导入图片</button>
+        <button className="btn lg" onClick={onPaste}><ClipboardPaste size={16} /> 粘贴截图</button>
         <button className="btn lg" onClick={onSample}><Sparkles size={16} /> 载入示例</button>
       </div>
       <div className="scan-empty-modes">
         {MODES.map((m) => <div key={m.id} className={cn(m.id === mode && 'active')}><m.icon size={15} /><span><strong>{m.label}</strong><small>{m.note}</small></span></div>)}
       </div>
       <button className="scan-cloud-link" onClick={onFiles}><FileText size={12} /> 或从云巢选择一张图片</button>
+      <span className="scan-clip-hint">支持 Ctrl/⌘+V 直接粘贴截图 · 拖拽图片到窗口也可以</span>
     </div>
   )
 }
