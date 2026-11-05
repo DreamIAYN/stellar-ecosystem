@@ -32,6 +32,8 @@
 
 ### Apps
 
+墨记使用「底层页面画布 + 顶层实时笔迹画布」：指针事件只操作 Canvas refs，不进入 React state；提交时一次性写入 Store。笔迹用二次曲线中点插值，提交与缩略图使用同一套平滑算法，避免折线与锯齿。
+
 每个应用位于 `src/apps/<app>/`，默认导出 React 组件，接收 `params` 与 `winId`。应用通过 `AppRenderer` 懒加载，单个应用崩溃由 `AppErrorBoundary` 隔离。
 
 ### Edge

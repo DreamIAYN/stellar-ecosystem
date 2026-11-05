@@ -87,33 +87,46 @@ function drawPage(ctx: CanvasRenderingContext2D, page: NotePage, width: number, 
 function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, width: number, height: number, scale: number) {
   if (!stroke.points.length) return
   const pts = stroke.points.map((p) => ({ x: p.x * width, y: p.y * height, p: p.p }))
+  const base = stroke.width * 2.15 * scale
+  const avgP = pts.reduce((n, p) => n + p.p, 0) / pts.length
+  const lineWidth = Math.max(0.8, base * (0.6 + avgP * 0.8))
   ctx.save()
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.strokeStyle = stroke.color
+  ctx.fillStyle = stroke.color
+  ctx.lineWidth = lineWidth
   ctx.globalAlpha = stroke.tool === 'marker' ? 0.3 : 1
-  const base = stroke.width * 2.15 * scale
   if (pts.length === 1) {
     ctx.beginPath()
-    ctx.arc(pts[0].x, pts[0].y, base / 2, 0, Math.PI * 2)
-    ctx.fillStyle = stroke.color
+    ctx.arc(pts[0].x, pts[0].y, lineWidth / 2, 0, Math.PI * 2)
     ctx.fill()
     ctx.restore()
     return
   }
-  for (let i = 1; i < pts.length; i++) {
-    const a = pts[i - 1]
-    const b = pts[i]
-    const w = base * (0.55 + ((a.p + b.p) / 2) * 0.75)
-    ctx.beginPath()
-    ctx.moveTo(a.x, a.y)
-    if (i < pts.length - 1) {
-      const c = pts[i + 1]
-      ctx.quadraticCurveTo(b.x, b.y, (b.x + c.x) / 2, (b.y + c.y) / 2)
-    } else ctx.lineTo(b.x, b.y)
-    ctx.lineWidth = Math.max(0.8, w)
-    ctx.stroke()
+  const mid = (a: typeof pts[number], b: typeof pts[number]) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
+  ctx.beginPath()
+  if (pts.length === 2) {
+    ctx.moveTo(pts[0].x, pts[0].y)
+    ctx.lineTo(pts[1].x, pts[1].y)
+  } else {
+    // Quadratic midpoint interpolation. Every raw point controls a smooth
+    // segment; round caps hide the seams. This removes the polyline look of
+    // the previous per-segment renderer without adding latency.
+    ctx.moveTo(pts[0].x, pts[0].y)
+    const firstMid = mid(pts[0], pts[1])
+    ctx.lineTo(firstMid.x, firstMid.y)
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = mid(pts[i - 1], pts[i])
+      const b = mid(pts[i], pts[i + 1])
+      ctx.moveTo(a.x, a.y)
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, b.x, b.y)
+    }
+    const lastMid = mid(pts[pts.length - 2], pts[pts.length - 1])
+    ctx.moveTo(lastMid.x, lastMid.y)
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y)
   }
+  ctx.stroke()
   ctx.restore()
 }
 
@@ -133,11 +146,12 @@ export default function NotesApp({ params, winId }: AppProps) {
   const [color, setColor] = useState(COLORS[0])
   const [width, setWidth] = useState(WIDTHS[1])
   const [zoom, setZoom] = useState(1)
-  const [live, setLive] = useState<Stroke | null>(null)
   const [textBox, setTextBox] = useState<{ x: number; y: number; left: number; top: number; value: string } | null>(null)
   const [savedAt, setSavedAt] = useState('')
   const [fontTick, setFontTick] = useState(0)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const liveCanvasRef = useRef<HTMLCanvasElement>(null)
+  const liveStroke = useRef<Stroke | null>(null)
   const drawing = useRef(false)
   const undoStack = useRef<Array<{ strokes: Stroke[]; texts: NoteText[] }>>([])
   const redoStack = useRef<Array<{ strokes: Stroke[]; texts: NoteText[] }>>([])
@@ -159,16 +173,18 @@ export default function NotesApp({ params, winId }: AppProps) {
   useEffect(() => {
     undoStack.current = []
     redoStack.current = []
-    setLive(null)
+    liveStroke.current = null
     setTextBox(null)
+    clearLive()
   }, [activeId, pageIndex])
 
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || !page) return
     const ctx = canvas.getContext('2d')!
-    drawPage(ctx, { ...page, strokes: live ? [...page.strokes, live] : page.strokes }, MAX_W, MAX_H)
-  }, [page, live, fontTick])
+    drawPage(ctx, page, MAX_W, MAX_H)
+    clearLive()
+  }, [page, fontTick])
 
   const savePage = (next: { strokes?: Stroke[]; texts?: NoteText[]; template?: NotePage['template'] }) => {
     if (!notebook || !page) return
@@ -209,6 +225,84 @@ export default function NotesApp({ params, winId }: AppProps) {
     }
   }
 
+  const clearLive = () => {
+    const c = liveCanvasRef.current
+    if (c) c.getContext('2d')!.clearRect(0, 0, c.width, c.height)
+  }
+
+  const styleLive = (ctx: CanvasRenderingContext2D) => {
+    const s = liveStroke.current
+    if (!s) return
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = s.color
+    ctx.fillStyle = s.color
+    ctx.lineWidth = Math.max(0.8, s.width * 2.15)
+    ctx.globalAlpha = s.tool === 'marker' ? 0.3 : 1
+  }
+
+  const drawLiveIncrement = () => {
+    const s = liveStroke.current
+    const canvas = liveCanvasRef.current
+    if (!s || !canvas || !s.points.length) return
+    const ctx = canvas.getContext('2d')!
+    const pts = s.points.map((p) => ({ x: p.x * MAX_W, y: p.y * MAX_H }))
+    const n = pts.length
+    ctx.save()
+    styleLive(ctx)
+    if (n === 1) {
+      ctx.beginPath()
+      ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth / 2, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.restore()
+      return
+    }
+    const mid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
+    if (n === 2) {
+      const m = mid(pts[0], pts[1])
+      ctx.beginPath()
+      ctx.moveTo(pts[0].x, pts[0].y)
+      ctx.lineTo(m.x, m.y)
+      ctx.stroke()
+    } else {
+      const a = mid(pts[n - 3], pts[n - 2])
+      const b = mid(pts[n - 2], pts[n - 1])
+      ctx.beginPath()
+      ctx.moveTo(a.x, a.y)
+      ctx.quadraticCurveTo(pts[n - 2].x, pts[n - 2].y, b.x, b.y)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  const finalizeLiveSegment = () => {
+    const s = liveStroke.current
+    const canvas = liveCanvasRef.current
+    if (!s || !canvas || s.points.length < 2) return
+    const ctx = canvas.getContext('2d')!
+    const a = s.points[s.points.length - 2]
+    const b = s.points[s.points.length - 1]
+    const ax = a.x * MAX_W, ay = a.y * MAX_H
+    const bx = b.x * MAX_W, by = b.y * MAX_H
+    const mx = (ax + bx) / 2, my = (ay + by) / 2
+    ctx.save()
+    styleLive(ctx)
+    ctx.beginPath()
+    ctx.moveTo(mx, my)
+    ctx.lineTo(bx, by)
+    ctx.stroke()
+    ctx.restore()
+  }
+
+  const addLivePoint = (pt: Point) => {
+    const s = liveStroke.current
+    if (!s) return
+    const last = s.points[s.points.length - 1]
+    if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 0.0008) return
+    s.points.push(pt)
+    drawLiveIncrement()
+  }
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!page) return
     const pt = pointFromEvent(e)
@@ -226,26 +320,41 @@ export default function NotesApp({ params, winId }: AppProps) {
       }
       return
     }
-    e.currentTarget.setPointerCapture(e.pointerId)
+    e.preventDefault()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    clearLive()
     drawing.current = true
-    setLive({ id: uid('stroke'), tool, color, width, points: [pt] })
+    liveStroke.current = { id: uid('stroke'), tool, color, width, points: [] }
+    addLivePoint(pt)
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawing.current || !live) return
-    const pt = pointFromEvent(e)
-    const last = live.points[live.points.length - 1]
-    if (Math.hypot(pt.x - last.x, pt.y - last.y) < 0.0012) return
-    setLive({ ...live, points: [...live.points, pt] })
+    if (!drawing.current || !liveStroke.current) return
+    e.preventDefault()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const native = e.nativeEvent as PointerEvent
+    const coalesced = typeof native.getCoalescedEvents === 'function' ? native.getCoalescedEvents() : []
+    const events = coalesced.length ? coalesced : [native]
+    for (const ev of events) {
+      const x = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width))
+      const y = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height))
+      addLivePoint({ x, y, p: ev.pressure > 0 ? ev.pressure : 0.5 })
+    }
   }
 
-  const onPointerUp = () => {
+  const finishStroke = (cancel = false) => {
     if (!drawing.current) return
     drawing.current = false
-    if (live && live.points.length && page) {
-      commit({ strokes: [...page.strokes, live] })
+    const s = liveStroke.current
+    if (!cancel && s && s.points.length) {
+      finalizeLiveSegment()
+      if (page) commit({ strokes: [...page.strokes, s] })
+    } else {
+      clearLive()
     }
-    setLive(null)
+    liveStroke.current = null
+    // The base-canvas redraw effect clears the overlay after the committed
+    // stroke has been painted, avoiding a one-frame blank.
   }
 
   const addText = () => {
@@ -391,17 +500,19 @@ export default function NotesApp({ params, winId }: AppProps) {
 
         <div className="notes-stage">
           <div className="notes-canvas-wrap" style={{ transform: `scale(${zoom})` }}>
-            <canvas
-              ref={canvasRef}
-              width={MAX_W}
-              height={MAX_H}
-              className={cn('notes-canvas', tool === 'text' && 'text-tool', tool === 'eraser' && 'eraser-tool')}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-            />
-            {textBox && (
+            <div className="notes-canvas-stack">
+              <canvas ref={canvasRef} width={MAX_W} height={MAX_H} className="notes-canvas" />
+              <canvas
+                ref={liveCanvasRef}
+                width={MAX_W}
+                height={MAX_H}
+                className={cn('notes-canvas-live', tool === 'text' && 'text-tool', tool === 'eraser' && 'eraser-tool')}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={() => finishStroke(false)}
+                onPointerCancel={() => finishStroke(true)}
+              />
+              {textBox && (
               <div className="notes-text-input" style={{ left: textBox.left, top: textBox.top }}>
                 <input
                   autoFocus
@@ -412,8 +523,9 @@ export default function NotesApp({ params, winId }: AppProps) {
                 />
                 <button onClick={addText}><Plus size={12} /></button>
                 <button onClick={() => setTextBox(null)}><X size={12} /></button>
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </div>
           {!page && <div className="empty-state"><BookOpen size={26} /><strong>选择或新建一个笔记本</strong></div>}
         </div>

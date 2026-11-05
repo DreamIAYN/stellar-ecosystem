@@ -1755,3 +1755,10 @@ input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border: 0; bo
 .scan-black-head { font-size: 8.5px; padding: 0 8px; color: #ffb3c0; border-color: rgba(255,107,129,.16); }
 .scan-black-head.primary { color: #1a0710; }
 @media (max-width: 900px) { .scan-black-head { display: none; } }
+
+/* Smooth live-ink overlay */
+.notes-canvas-stack { position: relative; height: 100%; aspect-ratio: 1240/1754; max-width: 100%; max-height: 100%; }
+.notes-canvas-stack > .notes-canvas { width: 100%; height: 100%; aspect-ratio: auto; }
+.notes-canvas-live { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 3px; touch-action: none; cursor: crosshair; }
+.notes-canvas-live.text-tool { cursor: text; }
+.notes-canvas-live.eraser-tool { cursor: cell; }
