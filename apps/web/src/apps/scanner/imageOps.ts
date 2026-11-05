@@ -252,12 +252,49 @@ function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterI
     return
   }
   if (filter === 'removeInk') {
-    const satCut = 0.42 - (strength / 100) * 0.18
+    const satCut = 0.32 - (strength / 100) * 0.14
     const mask = new Uint8Array(w * h)
+    // Estimate the local paper tone so removed ink blends into warm/beige
+    // photographed paper instead of leaving obvious pure-white patches.
+    let pr = 0, pg = 0, pb = 0, pn = 0
+    for (let p = 0; p < w * h; p += 4) {
+      const i = p * 4
+      const r = d[i], g = d[i + 1], b = d[i + 2]
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b)
+      if (lum > 165 && chroma < 16) { pr += r; pg += g; pb += b; pn++ }
+    }
+    const paperR = pn ? Math.round(pr / pn) : 255
+    const paperG = pn ? Math.round(pg / pn) : 255
+    const paperB = pn ? Math.round(pb / pn) : 255
+    // Protect printed glyphs: coloured anti-aliasing around dark print must not
+    // be mistaken for pen ink. We dilate a dark-core mask and never erase it.
+    const dark = new Uint8Array(w * h)
+    for (let p = 0; p < w * h; p++) {
+      const i = p * 4
+      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
+      const warmCast = d[i] - Math.max(d[i + 1], d[i + 2]) < 30
+      const coolCast = d[i + 2] - Math.max(d[i], d[i + 1]) < 20
+      if (lum < 68 && Math.max(d[i], d[i + 1], d[i + 2]) < 125 && warmCast && coolCast) dark[p] = 1
+    }
+    const protect = new Uint8Array(w * h)
+    const protectRadius = 2
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!dark[y * w + x]) continue
+        const x0 = Math.max(0, x - protectRadius)
+        const x1 = Math.min(w - 1, x + protectRadius)
+        const y0 = Math.max(0, y - protectRadius)
+        const y1 = Math.min(h - 1, y + protectRadius)
+        for (let yy = y0; yy <= y1; yy++) for (let xx = x0; xx <= x1; xx++) protect[yy * w + xx] = 1
+      }
+    }
     const isInkHue = (r: number, g: number, b: number) => {
-      const red = r - Math.max(g, b) > 10
-      const blue = b - Math.max(r, g) > 8
-      const magenta = r - g > 9 && b - g > 7
+      // Deliberately strict: warm ambient light makes dark print look slightly
+      // red. Requiring a strong channel gap and high value protects the print.
+      const red = r - Math.max(g, b) > 22
+      const blue = b - Math.max(r, g) > 18
+      const magenta = r - g > 20 && b - g > 15
       return red || blue || magenta
     }
     for (let p = 0; p < w * h; p++) {
@@ -268,12 +305,21 @@ function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterI
       const sat = mx === 0 ? 0 : (mx - mn) / mx
       const chroma = mx - mn
       const colored = inkOptions.mode === 'redblue' ? isInkHue(r, g, b) : true
-      const strongInk = sat > satCut && mx > 42 && colored
-      const fringe = chroma > 13 && mx > 55 && colored
-      if (strongInk || fringe) {
-        // Colored pen / highlighter / anti-aliased fringe -> paper white.
-        d[i] = d[i + 1] = d[i + 2] = 255
-        mask[p] = 1
+      // High value + saturation = pen ink. Low-value warm pixels are printed
+      // text under an ambient cast and must stay.
+      const strongInk = colored && mx > 86 && sat > (inkOptions.mode === 'all' ? Math.max(0.26, satCut) : satCut)
+      const fringe = colored && mx > 106 && chroma > 18 && sat > (inkOptions.mode === 'all' ? 0.24 : 0.15)
+      if (fringe) {
+        // Anti-aliased pen edge: whiten it, but do not grow the mask from it.
+        if (!protect[p]) { d[i] = paperR; d[i + 1] = paperG; d[i + 2] = paperB }
+        continue
+      }
+      if (strongInk) {
+        // Pen core: whiten and remember it for a tiny halo dilation.
+        if (!protect[p]) {
+          d[i] = paperR; d[i + 1] = paperG; d[i + 2] = paperB
+          mask[p] = 1
+        }
         continue
       }
       if (!inkOptions.preserve) {
@@ -298,8 +344,9 @@ function applyFilter(d: Uint8ClampedArray, w: number, h: number, filter: FilterI
         const y1 = Math.min(h - 1, y + radius)
         for (let yy = y0; yy <= y1; yy++) {
           for (let xx = x0; xx <= x1; xx++) {
+            if (protect[yy * w + xx]) continue
             const i = (yy * w + xx) * 4
-            d[i] = d[i + 1] = d[i + 2] = 255
+            d[i] = paperR; d[i + 1] = paperG; d[i + 2] = paperB
           }
         }
       }
