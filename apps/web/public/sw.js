@@ -1,4 +1,4 @@
-const CACHE = 'stellar-v2'
+const CACHE = 'stellar-v3'
 const CORE = ['./', './index.html', './brand.svg', './manifest.webmanifest']
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()))

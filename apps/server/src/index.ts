@@ -34,10 +34,28 @@ interface RTCIceServerLike { urls: string; username?: string; credential?: strin
 
 const webDist = path.resolve(__dirname, '../../web/dist')
 if (existsSync(path.join(webDist, 'index.html'))) {
-  app.use(express.static(webDist, { index: false, maxAge: '1h' }))
+  app.use(
+    express.static(webDist, {
+      index: false,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.webmanifest')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+        } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        } else {
+          res.setHeader('Cache-Control', 'public, max-age=3600')
+        }
+      },
+    }),
+  )
+  const sendIndex = (_req: express.Request, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(path.join(webDist, 'index.html'))
+  }
   app.use((req, res, next) => {
-    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/ws')) {
-      res.sendFile(path.join(webDist, 'index.html'))
+    const looksLikeAsset = req.path.startsWith('/assets/') || /\.[a-z0-9]{2,8}$/i.test(req.path)
+    if ((req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api') && !req.path.startsWith('/ws') && !looksLikeAsset) {
+      sendIndex(req, res)
     } else next()
   })
 } else {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ComponentType } from 'react'
+import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react'
 import type { AppId, Params } from '../core/types'
 import { AppErrorBoundary } from './AppErrorBoundary'
 
@@ -7,18 +7,39 @@ export interface AppProps {
   winId: string
 }
 
-const IMApp = lazy(() => import('../apps/im/IMApp'))
-const DriveApp = lazy(() => import('../apps/drive/DriveApp'))
-const MediaApp = lazy(() => import('../apps/media/MediaApp'))
-const ScannerApp = lazy(() => import('../apps/scanner/ScannerApp'))
-const AIApp = lazy(() => import('../apps/ai/AIApp'))
-const MeetingApp = lazy(() => import('../apps/meeting/MeetingApp'))
-const EditorApp = lazy(() => import('../apps/editor/EditorApp'))
-const RemoteApp = lazy(() => import('../apps/remote/RemoteApp'))
-const NotesApp = lazy(() => import('../apps/notes/NotesApp'))
-const BrowserApp = lazy(() => import('../apps/browser/BrowserApp'))
-const AssistantApp = lazy(() => import('../apps/assistant/AssistantApp'))
-const SettingsApp = lazy(() => import('../apps/settings/SettingsApp'))
+const CHUNK_RETRY_KEY = 'stellar-chunk-retry'
+
+function lazyWithRetry(factory: () => Promise<{ default: ComponentType<AppProps> }>): LazyExoticComponent<ComponentType<AppProps>> {
+  return lazy(async () => {
+    try {
+      return await factory()
+    } catch (error) {
+      // A deployment can replace an old index.html whose hashed chunk has been
+      // removed. Reload once with cache-busting headers so the browser picks
+      // up the new manifest instead of showing "app offline".
+      if (!sessionStorage.getItem(CHUNK_RETRY_KEY)) {
+        sessionStorage.setItem(CHUNK_RETRY_KEY, '1')
+        const url = new URL(location.href)
+        url.searchParams.set('v', String(Date.now()))
+        location.replace(url.toString())
+      }
+      throw error
+    }
+  })
+}
+
+const IMApp = lazyWithRetry(() => import('../apps/im/IMApp'))
+const DriveApp = lazyWithRetry(() => import('../apps/drive/DriveApp'))
+const MediaApp = lazyWithRetry(() => import('../apps/media/MediaApp'))
+const ScannerApp = lazyWithRetry(() => import('../apps/scanner/ScannerApp'))
+const AIApp = lazyWithRetry(() => import('../apps/ai/AIApp'))
+const MeetingApp = lazyWithRetry(() => import('../apps/meeting/MeetingApp'))
+const EditorApp = lazyWithRetry(() => import('../apps/editor/EditorApp'))
+const RemoteApp = lazyWithRetry(() => import('../apps/remote/RemoteApp'))
+const NotesApp = lazyWithRetry(() => import('../apps/notes/NotesApp'))
+const BrowserApp = lazyWithRetry(() => import('../apps/browser/BrowserApp'))
+const AssistantApp = lazyWithRetry(() => import('../apps/assistant/AssistantApp'))
+const SettingsApp = lazyWithRetry(() => import('../apps/settings/SettingsApp'))
 
 const REGISTRY: Record<AppId, ComponentType<AppProps>> = {
   im: IMApp,

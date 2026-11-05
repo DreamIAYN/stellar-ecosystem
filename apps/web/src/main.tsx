@@ -13,6 +13,18 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 )
 
+window.addEventListener('vite:preloadError', (event) => {
+  event.preventDefault()
+  if (!sessionStorage.getItem('stellar-chunk-retry')) {
+    sessionStorage.setItem('stellar-chunk-retry', '1')
+    const url = new URL(location.href)
+    url.searchParams.set('v', String(Date.now()))
+    location.replace(url.toString())
+  }
+})
+
+setTimeout(() => sessionStorage.removeItem('stellar-chunk-retry'), 12000)
+
 requestAnimationFrame(() => {
   const boot = document.getElementById('boot')
   if (boot) {

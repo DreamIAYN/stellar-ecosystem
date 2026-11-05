@@ -213,6 +213,52 @@ pnpm start        # 生产运行（需先 build）
 pnpm typecheck    # 全仓类型检查
 ```
 
+## 部署缓存与「应用失联」排查
+
+Vite 会给每个应用生成带哈希的懒加载 chunk。如果浏览器缓存了旧 `index.html`，而服务器已经重新构建，点击应用就可能出现：
+
+```text
+Failed to fetch dynamically imported module: /assets/RemoteApp-xxxx.js
+```
+
+当前版本已做三层修复：
+
+- `index.html` / `sw.js` 返回 `Cache-Control: no-cache, no-store`；
+- `/assets/*` 使用一年 `immutable` 缓存；
+- 懒加载失败时自动带 `?v=timestamp` 重载一次，Service Worker 使用 network-first 导航（`stellar-v3`）。
+
+如果仍遇到，按 **Ctrl+Shift+R** 强刷，或在开发者工具 Application → Service Workers 中注销一次。
+
+## Cloudflare Tunnel
+
+可以暴露本机生产服务：
+
+```bash
+pnpm build
+pnpm start              # 127.0.0.1:8787
+
+cloudflared tunnel login
+cloudflared tunnel create stellar
+cloudflared tunnel route dns <TUNNEL-UUID> stellar.example.com
+cloudflared tunnel run <TUNNEL-UUID>
+```
+
+`~/.cloudflared/config.yml`：
+
+```yaml
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/<user>/.cloudflared/<TUNNEL-UUID>.json
+ingress:
+  - hostname: stellar.example.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404
+```
+
+- **只给 Tunnel UUID 不足以启动**：还需要该 tunnel 的 credentials JSON 或 token，以及已路由的域名。
+- Cloudflare 支持 WebSocket，`/ws` 可直接通过；会议媒体走 WebRTC，不经过 Tunnel。
+- 如果启用 Cloudflare Access，请确保 WebSocket 请求也通过同样的 Access 策略。
+- 不要把 tunnel credentials 提交到仓库。
+
 ## 已知边界 / Roadmap
 
 - [ ] TURN 一键配置与连接质量面板
