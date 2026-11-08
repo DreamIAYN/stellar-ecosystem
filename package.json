@@ -42,12 +42,5 @@
     "notes",
     "ecosystem",
     "self-hosted"
-  ],
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "core-js",
-      "esbuild",
-      "tesseract.js"
-    ]
-  }
+  ]
 }
