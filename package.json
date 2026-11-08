@@ -20,5 +20,27 @@
   "engines": {
     "node": ">=22",
     "pnpm": ">=10"
-  }
+  },
+  "description": "星环 Stellar — 开源、本地优先、可自托管的个人数字生态，12 个可互相调用的应用。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DreamIAYN/stellar-ecosystem.git"
+  },
+  "homepage": "https://github.com/DreamIAYN/stellar-ecosystem#readme",
+  "bugs": {
+    "url": "https://github.com/DreamIAYN/stellar-ecosystem/issues"
+  },
+  "author": "DreamIAYN",
+  "keywords": [
+    "local-first",
+    "pwa",
+    "react",
+    "typescript",
+    "webrtc",
+    "ocr",
+    "scanner",
+    "notes",
+    "ecosystem",
+    "self-hosted"
+  ]
 }

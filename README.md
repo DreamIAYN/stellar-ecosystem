@@ -1,5 +1,11 @@
 # 星环 Stellar · 全生态工作空间
 
+[![CI](https://github.com/DreamIAYN/stellar-ecosystem/actions/workflows/ci.yml/badge.svg)](https://github.com/DreamIAYN/stellar-ecosystem/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-5fa04e.svg)](package.json)
+
+**仓库：** [DreamIAYN/stellar-ecosystem](https://github.com/DreamIAYN/stellar-ecosystem)
+
 > 一个开源、本地优先、可自托管、跨平台可移植的个人数字生态。  
 > 12 个应用共享同一套窗口系统、文件存储、事件总线与身份——不是应用合集，而是一个能互相调用的整体。
 
@@ -100,6 +106,8 @@ ecosystem.notify('扫描师', '扫描件已保存', { appId: 'drive', params: { 
 要求：Node.js **22+**、pnpm **10/11**。
 
 ```bash
+git clone https://github.com/DreamIAYN/stellar-ecosystem.git
+cd stellar-ecosystem
 pnpm install
 pnpm dev
 ```
